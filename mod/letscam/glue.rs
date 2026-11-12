@@ -432,6 +432,8 @@ fn expand_angles(words: &[&str]) -> Vec<Vec<String>> {
 thread_local! {
     /// Renders still to make of the current recording, each as its option words.
     static QUEUE: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
+    /// The last half second of replay time the sync diagnostics logged.
+    static LAST_SYNC_LOG: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
 }
 
 /// `/letscam render [папка] [ракурс[+ракурс…]] [x0.25] [sheet[=N]] [focus=...]`: the first word
@@ -666,6 +668,16 @@ fn tick_render(game: &mut Game<'_>) {
         _ => None,
     });
     apply_day_time(game, day_time);
+    // Sync diagnostics: where the replay shows the player, at which replay time (twice a second).
+    if let (Some(driver), Some(state)) = (game.studio_replay.as_ref(), game.native_client_state())
+        && let Some(eye) = state.eye_position
+    {
+        let t = driver.position_ms();
+        if t / 500 != LAST_SYNC_LOG.get() {
+            LAST_SYNC_LOG.set(t / 500);
+            log::info!("letscam: sync t_ms={t} replay_eye={eye:?}");
+        }
+    }
     enum Next {
         Wait,
         Warm,
