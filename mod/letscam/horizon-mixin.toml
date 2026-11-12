@@ -1,0 +1,114 @@
+# LetsCam for Horizon: let's play recording with an invisible third-person camera.
+# While playing, F9 records the studio replay (.mcpr), the game process audio (WASAPI process
+# loopback: the engine mixer cannot be hooked, it carries a cfg_attr), the microphone and
+# snapshots of open screens; afterwards `/letscam render` plays the replay back with the
+# director's camera and pipes every frame to ffmpeg (NVENC). Spec: ../../docs/design/01-spec.md.
+#
+# Client only: nothing here runs on a server. All logic lives in the crate (engine/); the
+# helpers are thin glue, because a crate edit rebuilds in ~11 s and a helper edit in ~48 s.
+[mod]
+id = "letscam"
+version = "0.1.0"
+
+[compatibility]
+horizon_revision = "7e4e421224743469035ba0c34fc21e569e64a17d"
+
+# The crate hangs off the render crate, where the frame readback lives; the
+# game reaches it through the public `letscam` module below.
+[[crate]]
+id = "engine"
+path = "engine"
+dependent = "horizon-client-render"
+
+# horizon_client_render::letscam: re-exports the crate and hands captured frames to the game.
+[[module]]
+id = "bridge"
+file = "crates/horizon-client-render/src/lib.rs"
+name = "letscam"
+source = "bridge.rs"
+visibility = "pub"
+
+# horizon_client::game::letscam_glue: recording, rendering, key, command and HUD logic.
+[[module]]
+id = "glue"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_glue"
+source = "glue.rs"
+
+# A screenshot request whose path carries LetsCam's marker is handed to the mod, not saved as PNG.
+[[injection]]
+id = "write_screenshot"
+target = "horizon_client_render::gfx::Renderer::write_screenshot"
+kind = "HEAD"
+cancellable = true
+helper = "write_screenshot.rs"
+bindings = [
+  { name = "this", ty = "&crate::gfx::Renderer", value = "self" },
+  { name = "request", ty = "&crate::gfx::ScreenshotRequest", value = "request" },
+  { name = "buffer", ty = "&wgpu::Buffer", value = "buffer" },
+]
+
+# While rendering, the replay moves exactly one video frame per drawn frame.
+[[injection]]
+id = "advance_replay"
+target = "horizon_client::game::studio::Game<'_>::advance_studio_replay"
+kind = "HEAD"
+helper = "advance_replay.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "frame"
+hook = "frame"
+hook_version = 1
+kind = "HEAD"
+helper = "frame.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "key"
+hook = "key"
+hook_version = 1
+kind = "HEAD"
+helper = "key.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+]
+
+[[injection]]
+id = "command"
+hook = "command"
+hook_version = 1
+kind = "HEAD"
+helper = "command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+[[injection]]
+id = "hud"
+hook = "hud"
+hook_version = 1
+kind = "HEAD"
+helper = "hud.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+# LetsCam's row in Options > Mods, with its key.
+[[injection]]
+id = "mods_listed"
+target = "horizon_client::game::native_hooks::Game<'_>::native_mods"
+kind = "HEAD"
+helper = "mods_listed.rs"
+bindings = [
+  { name = "mods", ty = "&mut Vec<crate::mod_api::NativeMod>", value = "&mut *mods" },
+]

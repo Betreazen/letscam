@@ -1,0 +1,3 @@
+target/
+# The engine takes the crate dependency versions from Horizon own Cargo.lock.
+/Cargo.lock
