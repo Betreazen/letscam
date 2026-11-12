@@ -29,7 +29,8 @@ pub struct Encoder {
     frames: u64,
 }
 
-fn command(ffmpeg: &str) -> Command {
+/// A command for ffmpeg that never opens a console window over the game.
+pub(crate) fn command(ffmpeg: &str) -> Command {
     let mut cmd = Command::new(ffmpeg);
     #[cfg(windows)]
     {

@@ -4,12 +4,14 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::director::{CameraPose, Director, WorldProbe};
+use crate::director::{CameraPose, Director, Focus, WorldProbe};
 use crate::encode::AudioInput;
 use crate::encoder::{Encoder, probe_hardware};
 use crate::pip::{Image, compose, load_png};
 use crate::recording::GUI_DIR;
+use crate::render_options::{MAX_SPEED, MIN_SPEED, RenderOptions};
 use crate::session::Session;
+use crate::sheet::make_sheets;
 
 /// PiP width as a share of the frame width (spec: about 45 %).
 const PIP_SCALE: f32 = 0.45;
@@ -17,6 +19,7 @@ const PIP_SCALE: f32 = 0.45;
 pub struct RenderJob {
     dir: PathBuf,
     cfg: Config,
+    opts: RenderOptions,
     session: Session,
     director: Director,
     fresh: Director,
@@ -63,10 +66,36 @@ fn audio_inputs(dir: &Path, session: &Session) -> Vec<AudioInput> {
     .collect()
 }
 
+/// Output frames for `duration_ms` of replay at `speed` (frame N shows replay time
+/// N × 1000/fps × speed).
+pub fn frames_for(duration_ms: u32, fps: u32, speed: f64) -> u64 {
+    let real_time = (u64::from(duration_ms) * u64::from(fps)).div_ceil(1000);
+    if speed >= MAX_SPEED {
+        return real_time;
+    }
+    (f64::from(duration_ms) * f64::from(fps) / (1000.0 * speed) - 1e-9).ceil() as u64
+}
+
 impl RenderJob {
-    /// Loads `session.json`, builds the director and picks `dir/letscam_<dirname>.<ext>`.
-    /// Falls back to software encoding when NVENC is not available.
+    /// [`RenderJob::open_with`] with default options: automatic director, real time.
     pub fn open(recording_dir: &Path, cfg: &Config) -> Result<RenderJob, String> {
+        RenderJob::open_with(recording_dir, cfg, RenderOptions::default())
+    }
+
+    /// Loads `session.json`, builds the director (with the options' preset) and picks
+    /// `dir/letscam_<dirname>[_preset][_focus][_xSPEED].<ext>`. Slow motion drops the audio.
+    /// Falls back to software encoding when NVENC is not available.
+    pub fn open_with(
+        recording_dir: &Path,
+        cfg: &Config,
+        opts: RenderOptions,
+    ) -> Result<RenderJob, String> {
+        if !opts.speed.is_finite() || !(MIN_SPEED..=MAX_SPEED).contains(&opts.speed) {
+            return Err(format!(
+                "скорость {} вне диапазона {MIN_SPEED}..{MAX_SPEED}",
+                opts.speed
+            ));
+        }
         let session = Session::load(recording_dir)?;
         let mut cfg = cfg.clone().validated();
         if cfg.hardware && !probe_hardware(&cfg.ffmpeg, cfg.codec) {
@@ -77,7 +106,7 @@ impl RenderJob {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "video".into());
-        let total_frames = (u64::from(session.duration_ms) * u64::from(cfg.fps)).div_ceil(1000);
+        let total_frames = frames_for(session.duration_ms, cfg.fps, opts.speed);
         if total_frames == 0 {
             return Err(format!("запись {name} пустая: нечего рендерить"));
         }
@@ -86,14 +115,22 @@ impl RenderJob {
             session.gui_events.clone(),
             cfg.director.clone(),
             seed_of(&name),
-        );
+        )
+        .with_preset(opts.preset);
+        let audio = if opts.speed < MAX_SPEED {
+            log::info!("LetsCam: замедление x{}: ролик без звука", opts.speed);
+            Vec::new()
+        } else {
+            audio_inputs(recording_dir, &session)
+        };
         Ok(RenderJob {
             dir: recording_dir.to_path_buf(),
-            out: recording_dir.join(format!("letscam_{name}.{}", cfg.container.extension())),
-            audio: audio_inputs(recording_dir, &session),
+            out: recording_dir.join(opts.file_name(&name, cfg.container.extension())),
+            audio,
             fresh: director.clone(),
             director,
             cfg,
+            opts,
             session,
             total_frames,
             posed: 0,
@@ -112,12 +149,21 @@ impl RenderJob {
         1000.0 / f64::from(self.cfg.fps)
     }
 
+    /// Replay time advanced per output frame: `frame_step_ms() × speed`.
+    pub fn replay_step_ms(&self) -> f64 {
+        self.frame_step_ms() * self.opts.speed
+    }
+
     pub fn total_frames(&self) -> u64 {
         self.total_frames
     }
 
     pub fn output_path(&self) -> &Path {
         &self.out
+    }
+
+    pub fn options(&self) -> &RenderOptions {
+        &self.opts
     }
 
     /// The session being rendered (warnings, durations).
@@ -127,12 +173,22 @@ impl RenderJob {
 
     /// Pose for the next frame to draw, `None` when all frames were posed.
     pub fn next_pose(&mut self, world: &dyn WorldProbe) -> Option<CameraPose> {
+        self.next_pose_focus(world, None)
+    }
+
+    /// Like [`RenderJob::next_pose`], watching `focus` (an entity the glue found in the replay
+    /// world for this frame) instead of the player when given.
+    pub fn next_pose_focus(
+        &mut self,
+        world: &dyn WorldProbe,
+        focus: Option<Focus>,
+    ) -> Option<CameraPose> {
         if self.posed >= self.total_frames {
             return None;
         }
-        let t = self.posed as f64 * self.frame_step_ms();
+        let t = self.posed as f64 * self.replay_step_ms();
         self.posed += 1;
-        Some(self.director.pose(t, world))
+        Some(self.director.pose_focus(t, world, focus))
     }
 
     /// Frame 0 pose without world probes and without touching the job's state (for parking
@@ -192,7 +248,7 @@ impl RenderJob {
                 self.size.0, self.size.1
             ));
         }
-        let t = self.submitted as f64 * self.frame_step_ms();
+        let t = self.submitted as f64 * self.replay_step_ms();
         let mut bytes = pixels.into_flattened();
         let margin = (height / 40).max(4);
         if let Some(img) = self.gui_overlay(t) {
@@ -208,13 +264,32 @@ impl RenderJob {
         (self.submitted as f64 / self.total_frames as f64) as f32
     }
 
-    /// Finishes the video; without `keep_sources` deletes the WAVs and GUI snapshots.
-    pub fn finish(mut self) -> Result<PathBuf, String> {
+    /// Finishes the video (and the contact sheet if asked); returns the video path.
+    pub fn finish(self) -> Result<PathBuf, String> {
+        self.finish_with_sheets().map(|(video, _)| video)
+    }
+
+    /// Finishes the video, builds the contact sheet pages if the options ask for them, and
+    /// without `keep_sources` deletes the WAVs and GUI snapshots.
+    pub fn finish_with_sheets(mut self) -> Result<(PathBuf, Vec<PathBuf>), String> {
         let enc = self
             .encoder
             .take()
             .ok_or("не отрендерено ни одного кадра")?;
+        let frames = enc.frames();
         let out = enc.finish()?;
+        let sheets = match self.opts.sheet_ticks {
+            Some(ticks) => make_sheets(
+                &self.cfg.ffmpeg,
+                &out,
+                frames,
+                self.cfg.fps,
+                self.opts.speed,
+                ticks,
+            )
+            .map_err(|e| format!("ролик готов ({}), но {e}", out.display()))?,
+            None => Vec::new(),
+        };
         if !self.cfg.keep_sources {
             let wavs = [&self.session.game_audio, &self.session.mic_audio];
             for track in wavs.into_iter().flatten() {
@@ -223,7 +298,7 @@ impl RenderJob {
             remove(&self.dir.join(GUI_DIR), true);
         }
         log::info!("LetsCam: ролик готов: {}", out.display());
-        Ok(out)
+        Ok((out, sheets))
     }
 
     /// Stops ffmpeg and removes the partial video.

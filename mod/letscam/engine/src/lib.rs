@@ -19,7 +19,9 @@ pub mod mic;
 pub mod pip;
 pub mod recording;
 pub mod render;
+pub mod render_options;
 pub mod session;
+pub mod sheet;
 mod timeline;
 pub mod track;
 pub mod wav;
@@ -27,13 +29,17 @@ pub mod wav;
 #[cfg(test)]
 mod encoder_tests;
 #[cfg(test)]
+mod render_slow_tests;
+#[cfg(test)]
 mod render_tests;
 #[cfg(test)]
 mod test_util;
 
 pub use capture::CaptureSummary;
 pub use config::{Codec, Config, Container};
-pub use director::{CameraPose, Director, DirectorConfig, OpenWorld, WorldProbe};
+pub use director::{
+    CameraPose, Director, DirectorConfig, Focus, OpenWorld, ShotPreset, WorldProbe,
+};
 pub use encode::{AudioInput, ffmpeg_args, ffmpeg_args_with_duration};
 pub use encoder::{Encoder, probe_hardware};
 pub use loopback::GameAudioCapture;
@@ -41,5 +47,6 @@ pub use mic::MicCapture;
 pub use pip::{Image, compose, load_png};
 pub use recording::Recording;
 pub use render::RenderJob;
+pub use render_options::RenderOptions;
 pub use session::{AudioTrack, GuiEvent, GuiFrame, Session};
 pub use track::TrackSample;

@@ -66,6 +66,26 @@ pub struct DirectorConfig {
     pub idle_move_epsilon: f64,
     /// Blend time between shots, seconds.
     pub blend_s: f64,
+    /// Presets: spring time for position (shorter than the director's).
+    pub preset_spring_s: f64,
+    /// Orbit preset: radius, height above the subject centre, seconds per full turn.
+    pub orbit_radius: f64,
+    pub orbit_height: f64,
+    pub orbit_period_s: f64,
+    /// Side preset: distance and height (camera at 90° to the subject's facing).
+    pub side_distance: f64,
+    pub side_height: f64,
+    /// Front preset: distance and height (camera in front, facing the subject).
+    pub front_distance: f64,
+    pub front_height: f64,
+    /// Top preset: height above the subject.
+    pub top_height: f64,
+    /// Shoulder preset: blocks behind and to the right of the eyes; share of the turn to the focus.
+    pub shoulder_back: f64,
+    pub shoulder_right: f64,
+    pub shoulder_focus_turn: f64,
+    /// Auto with a focus: seconds without movement before the camera orbits the subject.
+    pub focus_idle_s: f64,
 }
 
 impl Default for DirectorConfig {
@@ -109,6 +129,19 @@ impl Default for DirectorConfig {
             idle_period_s: 40.0,
             idle_move_epsilon: 0.3,
             blend_s: 0.8,
+            preset_spring_s: 0.2,
+            orbit_radius: 4.0,
+            orbit_height: 1.0,
+            orbit_period_s: 12.0,
+            side_distance: 5.0,
+            side_height: 0.3,
+            front_distance: 4.0,
+            front_height: 0.3,
+            top_height: 10.0,
+            shoulder_back: 1.3,
+            shoulder_right: 0.5,
+            shoulder_focus_turn: 0.5,
+            focus_idle_s: 2.0,
         }
     }
 }
@@ -207,6 +240,19 @@ impl DirectorConfig {
             idle_period_s: clamp(self.idle_period_s, 2.0, 600.0, d.idle_period_s),
             idle_move_epsilon: clamp(self.idle_move_epsilon, 0.0, 10.0, d.idle_move_epsilon),
             blend_s: clamp(self.blend_s, 0.0, 10.0, d.blend_s),
+            preset_spring_s: clamp(self.preset_spring_s, 0.0, 5.0, d.preset_spring_s),
+            orbit_radius: clamp(self.orbit_radius, 0.5, 64.0, d.orbit_radius),
+            orbit_height: clamp(self.orbit_height, -16.0, 32.0, d.orbit_height),
+            orbit_period_s: clamp(self.orbit_period_s, 1.0, 600.0, d.orbit_period_s),
+            side_distance: clamp(self.side_distance, 0.5, 64.0, d.side_distance),
+            side_height: clamp(self.side_height, -16.0, 32.0, d.side_height),
+            front_distance: clamp(self.front_distance, 0.5, 64.0, d.front_distance),
+            front_height: clamp(self.front_height, -16.0, 32.0, d.front_height),
+            top_height: clamp(self.top_height, 1.0, 64.0, d.top_height),
+            shoulder_back: clamp(self.shoulder_back, 0.0, 8.0, d.shoulder_back),
+            shoulder_right: clamp(self.shoulder_right, -4.0, 4.0, d.shoulder_right),
+            shoulder_focus_turn: clamp(self.shoulder_focus_turn, 0.0, 1.0, d.shoulder_focus_turn),
+            focus_idle_s: clamp(self.focus_idle_s, 0.2, 600.0, d.focus_idle_s),
         }
     }
 }

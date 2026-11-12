@@ -48,6 +48,12 @@ pub fn yaw_dir(yaw_deg: f64) -> V3 {
     [-r.sin(), 0.0, r.cos()]
 }
 
+/// Unit view vector for Minecraft yaw/pitch (pitch positive = down).
+pub fn view_dir(yaw_deg: f64, pitch_deg: f64) -> V3 {
+    let (y, p) = (yaw_deg.to_radians(), pitch_deg.to_radians());
+    [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
+}
+
 /// Yaw of a direction (degrees, Minecraft convention).
 pub fn yaw_of(d: V3) -> f64 {
     (-d[0]).atan2(d[2]).to_degrees()

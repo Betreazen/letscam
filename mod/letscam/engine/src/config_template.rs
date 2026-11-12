@@ -108,6 +108,27 @@ idle_period_s = {idle_period:?}
 idle_move_epsilon = {idle_eps:?}
 # Смешивание при смене режима камеры, сек.
 blend_s = {blend:?}
+# Ракурсы для проверки анимаций (/letscam render orbit|side|front|top|shoulder|fp|fixed:x,y,z).
+# Сглаживание движения камеры в ракурсах, сек.
+preset_spring_s = {preset_spring:?}
+# Облёт: радиус, высота над центром объекта, секунд на полный круг.
+orbit_radius = {orbit_radius:?}
+orbit_height = {orbit_height:?}
+orbit_period_s = {orbit_period:?}
+# Сбоку: расстояние и высота (камера под 90° к взгляду объекта).
+side_distance = {side_distance:?}
+side_height = {side_height:?}
+# Спереди: расстояние и высота (камера смотрит объекту в лицо).
+front_distance = {front_distance:?}
+front_height = {front_height:?}
+# Сверху: высота над объектом.
+top_height = {top_height:?}
+# Через плечо: сколько блоков назад и вправо от глаз игрока, доля поворота к объекту фокуса (0..1).
+shoulder_back = {shoulder_back:?}
+shoulder_right = {shoulder_right:?}
+shoulder_focus_turn = {shoulder_turn:?}
+# Авто с фокусом на сущности: через сколько секунд без движения камера облетает её.
+focus_idle_s = {focus_idle:?}
 "#,
         ffmpeg = quoted(&cfg.ffmpeg),
         output_dir = quoted(&cfg.output_dir),
@@ -160,6 +181,19 @@ blend_s = {blend:?}
         idle_period = d.idle_period_s,
         idle_eps = d.idle_move_epsilon,
         blend = d.blend_s,
+        preset_spring = d.preset_spring_s,
+        orbit_radius = d.orbit_radius,
+        orbit_height = d.orbit_height,
+        orbit_period = d.orbit_period_s,
+        side_distance = d.side_distance,
+        side_height = d.side_height,
+        front_distance = d.front_distance,
+        front_height = d.front_height,
+        top_height = d.top_height,
+        shoulder_back = d.shoulder_back,
+        shoulder_right = d.shoulder_right,
+        shoulder_turn = d.shoulder_focus_turn,
+        focus_idle = d.focus_idle_s,
     )
 }
 

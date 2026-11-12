@@ -46,7 +46,33 @@ struct Render {
     frames: u64,
     last_report: u32,
     hide_gui_before: bool,
+    /// What `focus=` asked for, and the entity it settled on.
+    focus: Option<FocusSpec>,
+    focus_id: Option<u32>,
 }
+
+/// `focus=` of `/letscam render`: an entity id, an entity type (`minecraft:pig`,
+/// `soulscraft:revenant`, or without the namespace), or `ride`: what the player sits on.
+#[derive(Clone, Debug)]
+enum FocusSpec {
+    Id(u32),
+    Kind(String),
+    Ride,
+}
+
+impl FocusSpec {
+    fn parse(word: &str) -> FocusSpec {
+        match word {
+            "ride" | "mount" | "vehicle" => FocusSpec::Ride,
+            _ => word
+                .parse()
+                .map_or_else(|_| FocusSpec::Kind(word.to_owned()), FocusSpec::Id),
+        }
+    }
+}
+
+/// Within this many blocks of the eye, the nearest creature is what the player rides.
+const RIDE_RADIUS: f64 = 3.0;
 
 #[derive(Default)]
 enum Mode {
@@ -54,7 +80,7 @@ enum Mode {
     Idle,
     Recording(Box<Rec>),
     /// Waiting for the world to close before the replay opens.
-    Leaving(Box<engine::RenderJob>, PathBuf),
+    Leaving(Box<engine::RenderJob>, PathBuf, Option<FocusSpec>),
     Rendering(Box<Render>),
 }
 
@@ -350,12 +376,28 @@ fn list(game: &mut Game<'_>) {
     }
 }
 
-fn start_render(game: &mut Game<'_>, name: Option<&str>) {
+/// `/letscam render [папка] [ракурс] [x0.25] [sheet[=N]] [focus=...]`: the first word is the
+/// recording's folder when such a folder exists, the rest are the crate's render options.
+fn start_render(game: &mut Game<'_>, words: &[&str]) {
     if !STATE.with_borrow(|s| matches!(s.mode, Mode::Idle)) {
         say(game, "Сначала остановите запись или дождитесь конца рендера.");
         return;
     }
     let config = config();
+    let (name, option_words) = match words.split_first() {
+        Some((first, rest)) if output_root(&config).join(first).join(REPLAY_FILE).is_file() => {
+            (Some(*first), rest)
+        }
+        _ => (None, words),
+    };
+    let options = match engine::RenderOptions::parse(option_words) {
+        Ok(options) => options,
+        Err(error) => {
+            say(game, error);
+            return;
+        }
+    };
+    let focus = options.focus.as_deref().map(FocusSpec::parse);
     let dir = match name {
         Some(name) => output_root(&config).join(name),
         None => match recordings(&config).pop() {
@@ -370,7 +412,7 @@ fn start_render(game: &mut Game<'_>, name: Option<&str>) {
         say(game, format!("В {} нет {REPLAY_FILE}.", dir.display()));
         return;
     }
-    let job = match engine::RenderJob::open(&dir, &config) {
+    let job = match engine::RenderJob::open_with(&dir, &config, options) {
         Ok(job) => job,
         Err(error) => {
             say(game, format!("Рендер не начался: {error}"));
@@ -379,9 +421,14 @@ fn start_render(game: &mut Game<'_>, name: Option<&str>) {
     };
     say(
         game,
-        format!("Рендер {}: {} кадров. Отмена: Esc.", dir.display(), job.total_frames()),
+        format!(
+            "Рендер {} ({}): {} кадров. Отмена: Esc.",
+            dir.display(),
+            job.options().preset.word(),
+            job.total_frames()
+        ),
     );
-    STATE.with_borrow_mut(|state| state.mode = Mode::Leaving(Box::new(job), dir));
+    STATE.with_borrow_mut(|state| state.mode = Mode::Leaving(Box::new(job), dir, focus));
     if game.remote.is_some() {
         if let Err(error) = game.leave_server(None) {
             log::warn!("letscam: leaving the world: {error}");
@@ -394,13 +441,13 @@ fn open_replay(game: &mut Game<'_>) {
         return; // the world is still closing
     }
     let taken = STATE.with_borrow_mut(|state| match std::mem::take(&mut state.mode) {
-        Mode::Leaving(job, dir) => Some((job, dir)),
+        Mode::Leaving(job, dir, focus) => Some((job, dir, focus)),
         other => {
             state.mode = other;
             None
         }
     });
-    let Some((job, dir)) = taken else { return };
+    let Some((job, dir, focus)) = taken else { return };
     let path = dir.join(REPLAY_FILE);
     let opened = game.open_studio_replay(&path.to_string_lossy());
     let ok = matches!(&opened, Ok(v) if v["ok"].as_bool() == Some(true));
@@ -428,8 +475,50 @@ fn open_replay(game: &mut Game<'_>) {
             frames: 0,
             last_report: 0,
             hide_gui_before,
+            focus,
+            focus_id: None,
         }));
     });
+}
+
+/// The focus entity for this frame: the one already settled on while it lives, else the first
+/// match for `spec` (the nearest to the recorded player's eye), which it then sticks to.
+fn find_focus(game: &Game<'_>, spec: &FocusSpec, locked: &mut Option<u32>) -> Option<engine::Focus> {
+    let state = game.native_client_state()?;
+    let eye = state.eye_position?;
+    let entities = game.native_client_entities();
+    let alive = || entities.iter().filter(|e| e.alive && !e.spectator);
+    let distance = |p: [f64; 3]| {
+        let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    let nearest = |pick: &dyn Fn(&super::native_client_services::NativeClientEntity) -> bool| {
+        alive()
+            .filter(|e| pick(e))
+            .min_by(|a, b| distance(a.position).total_cmp(&distance(b.position)))
+    };
+    let entity = match locked.and_then(|id| alive().find(|e| e.id == id)) {
+        Some(entity) => entity,
+        None => {
+            let found = match spec {
+                FocusSpec::Id(id) => alive().find(|e| e.id == *id),
+                FocusSpec::Kind(kind) => nearest(&|e| {
+                    e.kind == *kind || e.kind.rsplit(':').next() == Some(kind.as_str())
+                }),
+                FocusSpec::Ride => nearest(&|e| {
+                    e.player_uuid.is_none() && distance(e.position) <= RIDE_RADIUS
+                }),
+            }?;
+            *locked = Some(found.id);
+            found
+        }
+    };
+    let [x, y, z] = entity.position_at(state.world_partial_tick);
+    Some(engine::Focus {
+        pos: [x, y + f64::from(entity.height) / 2.0, z],
+        height: entity.height,
+        yaw: Some(entity.yaw),
+    })
 }
 
 struct Probe<'g, 'a>(&'g Game<'a>);
@@ -484,7 +573,7 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
             return Some(Duration::ZERO);
         }
         render.frames += 1;
-        Some(Duration::from_secs_f64(render.job.frame_step_ms() / 1000.0))
+        Some(Duration::from_secs_f64(render.job.replay_step_ms() / 1000.0))
     });
     if let Some(step) = step {
         game.last_replay_tick = Some(now.checked_sub(step).unwrap_or(now));
@@ -542,10 +631,23 @@ fn tick_render(game: &mut Game<'_>) {
             request_capture(game, TAG_RENDER);
         }
         Next::Pose => {
+            let (spec, mut locked) = STATE.with_borrow(|state| match &state.mode {
+                Mode::Rendering(render) => (render.focus.clone(), render.focus_id),
+                _ => (None, None),
+            });
+            let focus = spec
+                .as_ref()
+                .and_then(|spec| find_focus(game, spec, &mut locked));
             let pose = {
                 let probe = Probe(game);
                 STATE.with_borrow_mut(|state| match &mut state.mode {
-                    Mode::Rendering(render) => render.job.next_pose(&probe),
+                    Mode::Rendering(render) => {
+                        if render.focus_id.is_none() && locked.is_some() {
+                            log::info!("letscam: focus on entity {locked:?}");
+                        }
+                        render.focus_id = locked;
+                        render.job.next_pose_focus(&probe, focus)
+                    }
                     _ => None,
                 })
             };
@@ -569,7 +671,7 @@ fn tick_render(game: &mut Game<'_>) {
 fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
     let render = STATE.with_borrow_mut(|state| match std::mem::take(&mut state.mode) {
         Mode::Rendering(render) => Some(render),
-        Mode::Leaving(job, _) => {
+        Mode::Leaving(job, ..) => {
             job.cancel();
             None
         }
@@ -581,8 +683,15 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
     let Some(render) = render else { return };
     let Render { job, dir, hide_gui_before, frames, .. } = *render;
     let message = match outcome {
-        Ok(()) => match job.finish() {
-            Ok(path) => format!("Ролик готов ({frames} кадров): {}", path.display()),
+        Ok(()) => match job.finish_with_sheets() {
+            Ok((path, sheets)) if sheets.is_empty() => {
+                format!("Ролик готов ({frames} кадров): {}", path.display())
+            }
+            Ok((path, sheets)) => format!(
+                "Ролик готов ({frames} кадров): {}; листов кадров: {}",
+                path.display(),
+                sheets.len()
+            ),
             Err(error) => format!("Рендер {} не удался: {error}", dir.display()),
         },
         Err(why) => {
@@ -653,7 +762,7 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
         Some("start") => start_recording(game),
         Some("stop") => stop_recording(game),
         Some("list") => list(game),
-        Some("render") => start_render(game, words.next()),
+        Some("render") => start_render(game, &words.collect::<Vec<_>>()),
         Some("cancel") => finish_render(game, Err("отменён".into())),
         Some("reload") => {
             STATE.with_borrow_mut(|state| state.config = None);
@@ -662,7 +771,7 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
         }
         _ => say(
             game,
-            "/letscam start | stop | list | render [папка] | cancel | reload",
+            "/letscam start | stop | list | cancel | reload | render [папка] [auto|fp|shoulder|orbit|side|front|top|fixed:x,y,z] [x0.25] [sheet[=тиков]] [focus=id|тип|ride]",
         ),
     }
 }
