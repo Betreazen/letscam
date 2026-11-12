@@ -376,8 +376,30 @@ fn list(game: &mut Game<'_>) {
     }
 }
 
-/// `/letscam render [папка] [ракурс] [x0.25] [sheet[=N]] [focus=...]`: the first word is the
-/// recording's folder when such a folder exists, the rest are the crate's render options.
+/// One render's option words per angle: `orbit+side+top` in the words gives three renders of
+/// the same recording, the other words shared (`fixed:x,y,z` keeps its commas, hence `+`).
+fn expand_angles(words: &[&str]) -> Vec<Vec<String>> {
+    let Some(at) = words.iter().position(|w| w.contains('+')) else {
+        return vec![words.iter().map(|w| (*w).to_owned()).collect()];
+    };
+    words[at]
+        .split('+')
+        .filter(|angle| !angle.is_empty())
+        .map(|angle| {
+            let mut one: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            one[at] = angle.to_owned();
+            one
+        })
+        .collect()
+}
+
+thread_local! {
+    /// Renders still to make of the current recording, each as its option words.
+    static QUEUE: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `/letscam render [папка] [ракурс[+ракурс…]] [x0.25] [sheet[=N]] [focus=...]`: the first word
+/// is the recording's folder when such a folder exists, the rest are the crate's render options.
 fn start_render(game: &mut Game<'_>, words: &[&str]) {
     if !STATE.with_borrow(|s| matches!(s.mode, Mode::Idle)) {
         say(game, "Сначала остановите запись или дождитесь конца рендера.");
@@ -390,14 +412,17 @@ fn start_render(game: &mut Game<'_>, words: &[&str]) {
         }
         _ => (None, words),
     };
-    let options = match engine::RenderOptions::parse(option_words) {
-        Ok(options) => options,
-        Err(error) => {
+    let mut renders = expand_angles(option_words);
+    // Every angle's words are checked before the first render starts.
+    for one in &renders {
+        let one: Vec<&str> = one.iter().map(String::as_str).collect();
+        if let Err(error) = engine::RenderOptions::parse(&one) {
             say(game, error);
             return;
         }
-    };
-    let focus = options.focus.as_deref().map(FocusSpec::parse);
+    }
+    let first = renders.remove(0);
+    QUEUE.with_borrow_mut(|queue| *queue = renders);
     let dir = match name {
         Some(name) => output_root(&config).join(name),
         None => match recordings(&config).pop() {
@@ -410,12 +435,29 @@ fn start_render(game: &mut Game<'_>, words: &[&str]) {
     };
     if !dir.join(REPLAY_FILE).is_file() {
         say(game, format!("В {} нет {REPLAY_FILE}.", dir.display()));
+        QUEUE.with_borrow_mut(Vec::clear);
         return;
     }
-    let job = match engine::RenderJob::open_with(&dir, &config, options) {
+    start_job(game, &config, dir, &first);
+}
+
+/// Opens one render of `dir` with `words` and leaves the world for it (no-op on the title).
+fn start_job(game: &mut Game<'_>, config: &engine::Config, dir: PathBuf, words: &[String]) {
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let options = match engine::RenderOptions::parse(&words) {
+        Ok(options) => options,
+        Err(error) => {
+            say(game, error);
+            QUEUE.with_borrow_mut(Vec::clear);
+            return;
+        }
+    };
+    let focus = options.focus.as_deref().map(FocusSpec::parse);
+    let job = match engine::RenderJob::open_with(&dir, config, options) {
         Ok(job) => job,
         Err(error) => {
             say(game, format!("Рендер не начался: {error}"));
+            QUEUE.with_borrow_mut(Vec::clear);
             return;
         }
     };
@@ -680,8 +722,12 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
             None
         }
     });
-    let Some(render) = render else { return };
+    let Some(render) = render else {
+        QUEUE.with_borrow_mut(Vec::clear);
+        return;
+    };
     let Render { job, dir, hide_gui_before, frames, .. } = *render;
+    let carry_on = outcome.is_ok();
     let message = match outcome {
         Ok(()) => match job.finish_with_sheets() {
             Ok((path, sheets)) if sheets.is_empty() => {
@@ -702,6 +748,18 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
     game.ui.hide_gui = hide_gui_before;
     game.close_studio_replay();
     say(game, message);
+    // The next angle of the same recording, straight from the title the replay left us on.
+    let next = QUEUE.with_borrow_mut(|queue| {
+        if !carry_on || queue.is_empty() {
+            queue.clear();
+            None
+        } else {
+            Some(queue.remove(0))
+        }
+    });
+    if let Some(words) = next {
+        start_job(game, &config(), dir, &words);
+    }
 }
 
 // ---- hooks -------------------------------------------------------------------------------

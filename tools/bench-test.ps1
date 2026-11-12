@@ -1,6 +1,7 @@
 # LetsCam on the joint bench (horizon-joint-dev/README.md): the offline bot lc_a records ~40 s in
 # LetsCam's area (x −1000..0, z −1000..0): walking up to a small house, through its door, the
-# inventory open inside, back out. Then `/letscam render` makes the video, and ffprobe checks it:
+# inventory open inside, back out. Then `/letscam render auto+orbit+side+top sheet` makes four
+# videos with contact sheets, and ffprobe checks the auto one:
 # 1920x1080, the fps from the config, two audio tracks named «Игра» and «Микрофон» (here only
 # «Игра»: the test never records the owner's microphone), the length of the recording ±1 frame.
 #
@@ -54,6 +55,21 @@ function Wait-Message($Bot, [string[]]$Patterns, [int]$TimeoutSec) {
         Start-Sleep -Seconds 2
     }
     throw "none of [$($Patterns -join ', ')] in chat after $TimeoutSec s"
+}
+
+# Waits for $Count «Ролик готов» lines in the game's log (one per angle), or the first failure.
+function Wait-Renders($Bot, [int]$Count, [int]$TimeoutSec) {
+    $log = [IO.Path]::ChangeExtension($Bot.Socket, 'log')
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $lines = if (Test-Path $log) { Get-Content $log | Where-Object { $_ -match 'letscam: ' } } else { @() }
+        $failure = $lines | Where-Object { $_ -match 'Рендер остановлен|не удался|не открылся|не начался' } | Select-Object -First 1
+        if ($failure) { return "FAIL: $failure" }
+        $done = @($lines | Where-Object { $_ -match 'Ролик готов' })
+        if ($done.Count -ge $Count) { return ($done -join "`n") }
+        Start-Sleep -Seconds 3
+    }
+    "FAIL: $Count renders not done after $TimeoutSec s"
 }
 
 # The test's config: no microphone (never the owner's), the rest as shipped.
@@ -117,8 +133,9 @@ try {
     Invoke-Bot $bot 'chat /letscam stop' | Out-Null
     Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30 | Write-Host
 
-    Invoke-Bot $bot 'chat /letscam render' | Out-Null
-    $done = Wait-Message $bot @('Ролик готов[^\n]*', 'Рендер остановлен[^\n]*', 'не удался[^\n]*', 'не открылся[^\n]*', 'не начался[^\n]*') $RenderTimeoutSec
+    # One recording, four angles in a row, each with its contact sheet.
+    Invoke-Bot $bot 'chat /letscam render auto+orbit+side+top sheet' | Out-Null
+    $done = Wait-Renders $bot 4 ($RenderTimeoutSec * 4)
     Write-Host $done
     Invoke-Bot $bot "screenshot $(Join-Path $Scratch 'after-render.png')" | Out-Null
 } finally {
@@ -129,12 +146,20 @@ try {
     else { Remove-Item -LiteralPath $configFile -Force }
 }
 
-if ($done -notmatch 'Ролик готов') { throw "render failed: $done" }
+if ($done -like 'FAIL:*') { throw "render failed: $done" }
 $root = $OutputRoot
 $dir = Get-ChildItem $root -Directory | Where-Object { $_.LastWriteTime -ge $started } |
     Sort-Object Name | Select-Object -Last 1
-$video = Get-ChildItem $dir.FullName -File | Where-Object { $_.Extension -in '.mp4', '.mkv' } | Select-Object -First 1
-if (-not $video) { throw "no video in $($dir.FullName)" }
+$stem = "letscam_$($dir.Name)"
+$video = Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq $stem } | Select-Object -First 1
+if (-not $video) { throw "no $stem video in $($dir.FullName)" }
+$angles = [ordered]@{}
+foreach ($angle in 'orbit', 'side', 'top') {
+    $angles["video $angle"] = [bool](Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq "${stem}_$angle" })
+}
+foreach ($s in '', '_orbit', '_side', '_top') {
+    $angles["sheet$s"] = Test-Path (Join-Path $dir.FullName "$stem${s}_sheet_01.png")
+}
 $probe = & $Ffprobe -v error -show_entries 'stream=index,codec_type,codec_name,width,height,r_frame_rate:stream_tags=title,handler_name:format=duration' `
     -of json $video.FullName | ConvertFrom-Json
 $session = Get-Content -Raw (Join-Path $dir.FullName 'session.json') | ConvertFrom-Json
@@ -149,6 +174,7 @@ $checks = [ordered]@{
     'audio track «Игра»'   = [bool]($a | Where-Object { $_.tags.title -eq 'Игра' -or $_.tags.handler_name -eq 'Игра' })
     'length ≈ recording'   = ([math]::Abs($duration - $expected) -le 0.1)
 }
+foreach ($k in $angles.Keys) { $checks[$k] = $angles[$k] }
 Write-Host "video: $($video.FullName)"
 Write-Host ("streams: " + (($probe.streams | ForEach-Object { "$($_.codec_type)/$($_.codec_name) $($_.tags.title)$($_.tags.handler_name)" }) -join '; '))
 Write-Host "duration: $duration s, recording: $expected s"
