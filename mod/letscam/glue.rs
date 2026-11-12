@@ -198,6 +198,10 @@ fn start_recording(game: &mut Game<'_>) {
     }
     let config = config();
     let dir = output_root(&config).join(stamp(SystemTime::now()));
+    // The recorder's clock starts when it is made (recorder.rs `start_time`), before it writes the
+    // snapshot of every loaded chunk at time 0, which can take seconds: taken after the call, the
+    // track and the audio lagged the replay by that long. So the start is taken before it.
+    let replay_start = Instant::now();
     let started = match game.start_studio_recording(Some("letscam")) {
         Ok(v) if v["ok"].as_bool() == Some(true) => v["path"].as_str().map(PathBuf::from),
         Ok(v) => {
@@ -210,7 +214,6 @@ fn start_recording(game: &mut Game<'_>) {
             return;
         }
     };
-    let replay_start = Instant::now();
     let Some(studio_path) = started else {
         say(game, "Реплей не сообщил путь к файлу.");
         let _ = game.stop_studio_recording();

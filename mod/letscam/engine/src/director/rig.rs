@@ -1,8 +1,8 @@
 //! The camera rig: turns a wish into a pose around an anchor point (the player's eyes or the
 //! focus subject) — springs on offsets, ceiling/lintel height limit, walls, look angles.
 
-use super::math::{UP, V3, add, dist, exp_alpha, len, pitch_of, scale, sub, yaw_dir, yaw_of};
 use super::detour::{self, Sight, near, sees};
+use super::math::{UP, V3, add, dist, exp_alpha, len, pitch_of, scale, sub, yaw_dir, yaw_of};
 use super::probe::{WorldProbe, clear_distance, clearance_up};
 use super::shots::Desired;
 use super::spring;
@@ -19,6 +19,8 @@ const MAX_ANCHOR_LAG: f64 = 1.0;
 const MAX_STEP: f64 = 0.6;
 /// How far a rescued camera moves from its previous spot towards the goal per frame.
 const STEP_TOWARDS: f64 = 0.4;
+/// The smoothed view never trails the wanted one by more than this, degrees.
+const MAX_LOOK_LAG_DEG: f64 = 12.0;
 
 /// What to do with a smoothed pose that fails validation.
 enum Rescue {
@@ -220,7 +222,10 @@ impl Director {
         let mut moves: Vec<V3> = vec![towards, [0.0, STEP_TOWARDS, 0.0], [0.0; 3]];
         moves.extend((0..8).map(|k| {
             let a = f64::from(k) * 45.0;
-            add(scale(yaw_dir(a), STEP_TOWARDS), [0.0, STEP_TOWARDS * 0.5, 0.0])
+            add(
+                scale(yaw_dir(a), STEP_TOWARDS),
+                [0.0, STEP_TOWARDS * 0.5, 0.0],
+            )
         }));
         let mut spots: Vec<V3> = moves.into_iter().map(|m| add(held, m)).collect();
         spots.sort_by(|a, b| dist(*a, goal).total_cmp(&dist(*b, goal)));
@@ -252,6 +257,15 @@ impl Director {
         } else {
             self.yaw.update(yaw, self.cfg.look_spring_s, dt);
             self.pitch.update(pitch, self.cfg.look_spring_s, dt);
+            // Smooth, but never so late that the subject leaves the frame.
+            let dy = crate::track::delta_deg(yaw, self.yaw.angle);
+            if dy.abs() > MAX_LOOK_LAG_DEG {
+                self.yaw.angle = crate::track::wrap_deg(yaw + MAX_LOOK_LAG_DEG.copysign(dy));
+            }
+            self.pitch.angle = self
+                .pitch
+                .angle
+                .clamp(pitch - MAX_LOOK_LAG_DEG, pitch + MAX_LOOK_LAG_DEG);
         }
     }
 

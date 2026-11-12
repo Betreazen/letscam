@@ -23,7 +23,10 @@ pub(super) fn sees(world: &dyn WorldProbe, p: V3, sight: &Sight) -> bool {
 
 /// Distance from `p` to the nearest sight point.
 pub(super) fn near(p: V3, sight: &Sight) -> f64 {
-    sight.iter().map(|s| dist(p, *s)).fold(f64::INFINITY, f64::min)
+    sight
+        .iter()
+        .map(|s| dist(p, *s))
+        .fold(f64::INFINITY, f64::min)
 }
 
 struct Candidate {

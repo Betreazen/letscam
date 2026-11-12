@@ -22,9 +22,9 @@ mod tests;
 #[cfg(test)]
 mod tests_focus;
 #[cfg(test)]
-mod tests_house;
-#[cfg(test)]
 mod tests_presets;
+#[cfg(test)]
+mod tests_scenes;
 #[cfg(test)]
 mod tests_shots;
 #[cfg(test)]

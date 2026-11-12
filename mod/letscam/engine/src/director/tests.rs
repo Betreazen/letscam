@@ -174,13 +174,17 @@ fn camera_follows_through_doorway_then_turn() {
             b.t
         );
         assert!(
-            super::WorldProbe::clear(&world, a.pose.pos, b.pose.pos),
+            b.cut || super::WorldProbe::clear(&world, a.pose.pos, b.pose.pos),
             "clipped through wall at {}: {:?} -> {:?}",
             b.t,
             a.pose.pos,
             b.pose.pos
         );
     }
+    // When the player steps out of the door line the camera behind the wall may cut once
+    // (declared) onto the clear ray; any other move must not pass through the wall.
+    let cuts = frames.iter().skip(1).filter(|f| f.cut).count();
+    assert!(cuts <= 1, "{cuts} cuts");
     let last = frames.last().expect("frames");
     assert!(
         last.pose.pos[2] > 11.0,
@@ -234,26 +238,4 @@ fn shoulder_swap_happens_and_moves_camera_sideways() {
         .fold(0.0, f64::max);
     assert!(side > 1.5, "max side offset {side:.2}");
     assert_smooth(&frames[1..], 0.4, 6.0);
-}
-
-#[test]
-#[ignore]
-fn doorway_turn_dump() {
-    let world = door_world();
-    let mut track = walk([0.5, EYE_Y, 0.0], 0.0, 4.3, 3.0);
-    let turn_at = track.last().expect("walk").clone();
-    let side = walk(turn_at.eye, -90.0, 4.3, 4.0);
-    track.extend(side.into_iter().skip(1).map(|mut s| {
-        s.t_ms += turn_at.t_ms;
-        s
-    }));
-    let mut d = director(&track);
-    for i in 0..420 {
-        let t = i as f64 * 1000.0 / 60.0;
-        let p = d.pose(t, &world);
-        if (2900.0..3200.0).contains(&t) {
-            let e = super::tests_world::eye_at(&track, t);
-            println!("{t:7.1} cut {} cam {:?} eye {:?} detour {:?} shot {}", d.last_was_cut(), p.pos, e, d.detour, d.shot_name());
-        }
-    }
 }

@@ -69,6 +69,8 @@ pub struct Frame {
     pub pose: CameraPose,
     pub eye: V3,
     pub shot: &'static str,
+    /// The director declared this frame a hard cut.
+    pub cut: bool,
 }
 
 /// Runs the director at `fps` over `[0, until_ms]`; `eye_of` gives the eye for checks.
@@ -90,6 +92,7 @@ pub fn run(
                 pose,
                 eye: eye_at(track, t),
                 shot: d.shot_name(),
+                cut: d.last_was_cut(),
             }
         })
         .collect()
