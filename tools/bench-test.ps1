@@ -14,74 +14,8 @@ param(
     [int]$RenderTimeoutSec = 900
 )
 $ErrorActionPreference = 'Stop'
-
-$Ctl = "$env:LOCALAPPDATA\Horizon\current\horizon-ctl.exe"
-$ServerTool = "$env:LOCALAPPDATA\Horizon\current\horizon-server.exe"
-$JointServer = "$env:LOCALAPPDATA\Horizon\joint-dev\server"
-$Instance = "$env:APPDATA\horizon\instances\joint-dev"
-$Ffprobe = 'ffprobe'
-
-function Get-JointClient {
-    $instances = Get-Content -Raw "$env:APPDATA\horizon-launcher\instances.json" | ConvertFrom-Json
-    $version = $instances.instances.'joint-dev'.version
-    if (-not $version) { throw 'joint-dev plays no native build yet: .\joint.ps1 client' }
-    "$env:APPDATA\horizon-launcher\versions\$version\horizon-client.exe"
-}
-
-function Invoke-Bot($Bot, [string]$Line, [int]$Timeout = 60) {
-    $words = $Line -split ' '
-    $out = & $Ctl --socket $Bot.Socket --timeout $Timeout @words 2>&1
-    if ($LASTEXITCODE -ne 0) { Write-Warning "$($Bot.Name): $Line -> $out" }
-    $out
-}
-
-function Invoke-Console([string]$Line) {
-    $out = & $ServerTool --dir $JointServer cmd $Line 2>&1
-    if ($LASTEXITCODE -ne 0) { Write-Warning "console: $Line -> $out" }
-    $out
-}
-
-function Wait-Message($Bot, [string[]]$Patterns, [int]$TimeoutSec) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        # Chat, and the game's log beside the socket: the render's last line comes after the
-        # replay closed, when the chat of the replay world is gone.
-        $text = (Invoke-Bot $Bot 'messages' 10) -join "`n"
-        $log = [IO.Path]::ChangeExtension($Bot.Socket, 'log')
-        if (Test-Path $log) { $text += "`n" + ((Get-Content -Tail 200 $log) -join "`n") }
-        foreach ($p in $Patterns) {
-            if ($text -match $p) { return $Matches[0] }
-        }
-        Start-Sleep -Seconds 2
-    }
-    throw "none of [$($Patterns -join ', ')] in chat after $TimeoutSec s"
-}
-
-# Waits for $Count «Ролик готов» lines in the game's log (one per angle), or the first failure.
-function Wait-Renders($Bot, [int]$Count, [int]$TimeoutSec) {
-    $log = [IO.Path]::ChangeExtension($Bot.Socket, 'log')
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        $lines = if (Test-Path $log) { Get-Content $log | Where-Object { $_ -match 'letscam: ' } } else { @() }
-        $failure = $lines | Where-Object { $_ -match 'Рендер остановлен|не удался|не открылся|не начался' } | Select-Object -First 1
-        if ($failure) { return "FAIL: $failure" }
-        $done = @($lines | Where-Object { $_ -match 'Ролик готов' })
-        if ($done.Count -ge $Count) { return ($done -join "`n") }
-        Start-Sleep -Seconds 3
-    }
-    "FAIL: $Count renders not done after $TimeoutSec s"
-}
-
-# The test's config: no microphone (never the owner's), the rest as shipped.
-$configDir = Join-Path $Instance 'config'
-New-Item -ItemType Directory -Force $configDir | Out-Null
-$configFile = Join-Path $configDir 'letscam-client.toml'
-$configBackup = $null
-if (Test-Path $configFile) { $configBackup = Get-Content -Raw $configFile }
-# Output on the Dev Drive: Defender scans every file written on C: (RustCraft's request).
-$OutputRoot = 'F:\letscam\joint-dev'
-$tomlRoot = $OutputRoot -replace '\\', '/'
-Set-Content -Encoding utf8 $configFile "record_mic = false`nkeep_sources = true`noutput_dir = `"$tomlRoot`"`n"
+. (Join-Path $PSScriptRoot 'lib.ps1')
+$configBackup = Set-TestConfig
 
 # The set: a 7x7 plank house with a door on its south side, a stone floor around it.
 # The flat check world stands at y -60 (the bench's check world is superflat). Built once the
@@ -99,15 +33,9 @@ function Build-Set {
     foreach ($line in $lines) { Write-Host "console: $line -> $(Invoke-Console $line)" }
 }
 
-New-Item -ItemType Directory -Force $Scratch | Out-Null
-$socket = Join-Path $Scratch 'lc_a.sock'
-$reply = & $Ctl --socket $socket launch --game (Get-JointClient) --offscreen --home $Instance `
-    --game-dir $Instance --player-dir $Scratch --name lc_a --server 127.0.0.1:25570 --width 1920 --height 1080 2>&1
-if ($LASTEXITCODE -ne 0) { throw "launch failed: $reply" }
-$bot = [pscustomobject]@{ Name = 'lc_a'; Socket = $socket }
+$bot = Start-LcBot $Scratch 1920 1080
 $started = Get-Date
 try {
-    Invoke-Bot $bot 'wait-ready 120' 130 | Out-Null
     Invoke-Console "gamemode creative lc_a" | Out-Null
     Invoke-Console "tp lc_a $x0 $y0 $($z0+12) 180 0" | Out-Null
     Start-Sleep -Seconds 5
@@ -139,17 +67,14 @@ try {
     Write-Host $done
     Invoke-Bot $bot "screenshot $(Join-Path $Scratch 'after-render.png')" | Out-Null
 } finally {
-    & $Ctl --socket $socket quit 2>&1 | Out-Null
+    Stop-LcBot $bot
     Invoke-Console "fill $($x0-12) $y0 $($z0-12) $($x0+12) $($y0+8) $($z0+16) air" | Out-Null
     Invoke-Console "fill $($x0-12) $($y0-1) $($z0-12) $($x0+12) $($y0-1) $($z0+16) grass_block" | Out-Null
-    if ($null -ne $configBackup) { Set-Content -Encoding utf8 -NoNewline $configFile $configBackup }
-    else { Remove-Item -LiteralPath $configFile -Force }
+    Restore-TestConfig $configBackup
 }
 
 if ($done -like 'FAIL:*') { throw "render failed: $done" }
-$root = $OutputRoot
-$dir = Get-ChildItem $root -Directory | Where-Object { $_.LastWriteTime -ge $started } |
-    Sort-Object Name | Select-Object -Last 1
+$dir = Get-NewRecording $started
 $stem = "letscam_$($dir.Name)"
 $video = Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq $stem } | Select-Object -First 1
 if (-not $video) { throw "no $stem video in $($dir.FullName)" }
