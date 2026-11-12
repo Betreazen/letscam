@@ -1,6 +1,7 @@
 //! Per-frame dispatch: automatic director, automatic with a focus entity, or a preset.
 
-use super::math::{dist, pitch_of, sub, yaw_of};
+use super::detour::Sight;
+use super::math::{V3, add, dist, pitch_of, sub, yaw_of};
 use super::path::PlayerState;
 use super::preset::{Focus, ShotPreset};
 use super::probe::{WorldProbe, clearance_up};
@@ -10,6 +11,27 @@ use super::{CameraPose, Director};
 
 /// How much focus history is kept, ms (covers idle detection and motion direction).
 const FOCUS_KEEP_MS: f64 = 30_000.0;
+/// The camera keeps at least this far from the subject when the space allows.
+const MIN_SUBJECT_DIST: f64 = 1.5;
+/// The shoulder preset is meant to be close (1.3 back, 0.5 right).
+const MIN_SHOULDER_DIST: f64 = 0.8;
+/// The body centre of the player is this far below the eyes.
+const BODY_BELOW_EYE: f64 = 0.72;
+/// A focus entity is checked at its centre and this much above it.
+const FOCUS_UPPER: f64 = 0.4;
+
+/// Eyes and body centre of the player.
+fn player_sight(eye: V3) -> Sight {
+    [eye, sub(eye, [0.0, BODY_BELOW_EYE, 0.0])]
+}
+
+/// What must be visible of the subject: the player's eyes and body, or the entity.
+fn subject_sight(state: &PlayerState, subject: &Subject) -> Sight {
+    match subject.key {
+        SubjectKey::Player => player_sight(state.eye),
+        SubjectKey::Focus => [subject.center, add(subject.center, [0.0, FOCUS_UPPER, 0.0])],
+    }
+}
 
 impl Director {
     /// Camera pose at replay time `t_ms`. With `focus`, the camera watches that entity instead
@@ -34,6 +56,7 @@ impl Director {
             .map_or(0.0, |l| ((t_ms - l) / 1000.0).clamp(0.0, 0.5));
         let subject = Subject::of(&state, focus.as_ref());
         let cut = self.track_subject(t_ms, &subject);
+        self.cut_flag = cut;
         match (self.preset, focus) {
             (ShotPreset::FirstPerson, _) => {
                 self.name = "first_person";
@@ -57,12 +80,19 @@ impl Director {
                     wish,
                     cut,
                     spring_s: self.cfg.spring_s,
+                    sight: subject_sight(&state, &subject),
+                    min_dist: MIN_SUBJECT_DIST,
                 };
                 self.rig(world, input)
             }
             (_, focus) => {
                 let (wish, anchor, fallback) =
                     self.preset_wish(t_ms, &state, &subject, focus.as_ref(), cut);
+                let (sight, min_dist) = if self.preset == ShotPreset::Shoulder {
+                    (player_sight(state.eye), MIN_SHOULDER_DIST)
+                } else {
+                    (subject_sight(&state, &subject), MIN_SUBJECT_DIST)
+                };
                 let input = RigInput {
                     t: t_ms,
                     dt,
@@ -71,6 +101,8 @@ impl Director {
                     wish,
                     cut,
                     spring_s: self.cfg.preset_spring_s,
+                    sight,
+                    min_dist,
                 };
                 self.rig(world, input)
             }
@@ -116,6 +148,8 @@ impl Director {
             wish,
             cut,
             spring_s: self.cfg.spring_s,
+            sight: player_sight(state.eye),
+            min_dist: MIN_SUBJECT_DIST,
         };
         self.rig(world, input)
     }

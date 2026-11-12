@@ -25,6 +25,36 @@ const WARMUP_FRAMES: u32 = 120;
 const MAX_MISSED: u32 = 60;
 const TAG_GUI: &str = "gui";
 const TAG_RENDER: &str = "render";
+/// The world's time of day when the recording began. A standalone replay builds its registries
+/// from the game's own data, so the recorded SetTime packets find no `minecraft:world_clock` and
+/// the sky stays at night: the render sets the time from this file instead.
+const WORLD_TIME_FILE: &str = "world_time.json";
+/// Game ticks per millisecond of replay (20 a second).
+const TICKS_PER_MS: f64 = 0.02;
+
+fn save_world_time(game: &Game<'_>, dir: &Path) {
+    let value = serde_json::json!({
+        "day_time": game.world.day_time,
+        "game_time": game.world.game_time,
+    });
+    if let Err(error) = std::fs::write(dir.join(WORLD_TIME_FILE), value.to_string()) {
+        log::warn!("letscam: {WORLD_TIME_FILE}: {error}");
+    }
+}
+
+fn load_day_time(dir: &Path) -> Option<i64> {
+    let text = std::fs::read_to_string(dir.join(WORLD_TIME_FILE)).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()?["day_time"].as_i64()
+}
+
+/// The recorded time of day at the replay's current position.
+fn apply_day_time(game: &mut Game<'_>, start: Option<i64>) {
+    let (Some(start), Some(driver)) = (start, game.studio_replay.as_ref()) else {
+        return;
+    };
+    let ticks = (f64::from(driver.position_ms()) * TICKS_PER_MS) as i64;
+    game.world.day_time = start + ticks;
+}
 
 struct Rec {
     recording: engine::Recording,
@@ -49,6 +79,8 @@ struct Render {
     /// What `focus=` asked for, and the entity it settled on.
     focus: Option<FocusSpec>,
     focus_id: Option<u32>,
+    /// The time of day the recording began with ([`WORLD_TIME_FILE`]), if it was saved.
+    day_time: Option<i64>,
 }
 
 /// `focus=` of `/letscam render`: an entity id, an entity type (`minecraft:pig`,
@@ -195,6 +227,7 @@ fn start_recording(game: &mut Game<'_>) {
     for warning in recording.warnings() {
         say(game, warning.clone());
     }
+    save_world_time(game, &dir);
     let swings_seen = game.swings_started;
     STATE.with_borrow_mut(|state| {
         state.mode = Mode::Recording(Box::new(Rec {
@@ -505,6 +538,7 @@ fn open_replay(game: &mut Game<'_>) {
     if let Some(driver) = game.studio_replay.as_mut() {
         driver.set_paused(true);
     }
+    let day_time = load_day_time(&dir);
     let hide_gui_before = game.ui.hide_gui;
     game.ui.hide_gui = true;
     STATE.with_borrow_mut(|state| {
@@ -519,6 +553,7 @@ fn open_replay(game: &mut Game<'_>) {
             hide_gui_before,
             focus,
             focus_id: None,
+            day_time,
         }));
     });
 }
@@ -623,6 +658,11 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
 }
 
 fn tick_render(game: &mut Game<'_>) {
+    let day_time = STATE.with_borrow(|state| match &state.mode {
+        Mode::Rendering(render) => render.day_time,
+        _ => None,
+    });
+    apply_day_time(game, day_time);
     enum Next {
         Wait,
         Warm,
@@ -868,4 +908,24 @@ pub fn on_mods(mods: &mut Vec<crate::mod_api::NativeMod>) {
             KEY_TOGGLE_DEFAULT.to_owned(),
         ]],
     });
+}
+
+/// A mod payload the server just sent, written into the studio recording the studio's own filter
+/// leaves it out of (see horizon-mixin.toml, `mod_net_recorded`). Only while LetsCam records a
+/// live world: in a replay the same functions run for the payloads read back.
+pub fn record_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
+    if !is_recording() || game.studio_replay.is_some() {
+        return;
+    }
+    let Some(remote) = game.remote.as_ref() else { return };
+    if !remote.session.is_recording() {
+        return;
+    }
+    let packet = horizon_protocol::packets::play::Clientbound::CustomPayload(
+        horizon_protocol::packets::configuration::CustomPayload {
+            channel: channel.to_owned(),
+            data: data.to_vec(),
+        },
+    );
+    remote.session.record_clientbound(&packet);
 }

@@ -3,6 +3,7 @@
 //! output frame comes out. Deterministic for the same input.
 
 mod clearance;
+mod detour;
 mod framing;
 mod math;
 mod path;
@@ -20,6 +21,8 @@ mod subject;
 mod tests;
 #[cfg(test)]
 mod tests_focus;
+#[cfg(test)]
+mod tests_house;
 #[cfg(test)]
 mod tests_presets;
 #[cfg(test)]
@@ -86,6 +89,12 @@ pub struct Director {
     focus_track: FocusTrack,
     /// Orbit preset: start angle and start time.
     orbit0: (f64, f64),
+    /// The last pose was a hard cut (no continuity with the frame before).
+    cut_flag: bool,
+    /// Clear spot used while the wished one is blocked (offset from the anchor).
+    detour: Option<V3>,
+    /// The anchor of the previous rigged frame (to measure camera moves relative to it).
+    last_eye: V3,
 }
 
 impl Director {
@@ -133,6 +142,9 @@ impl Director {
             last_center: [0.0; 3],
             focus_track: FocusTrack::default(),
             orbit0: (0.0, 0.0),
+            cut_flag: false,
+            detour: None,
+            last_eye: [0.0; 3],
         }
     }
 
@@ -144,6 +156,12 @@ impl Director {
 
     pub fn preset(&self) -> ShotPreset {
         self.preset
+    }
+
+    /// True if the last pose was a hard cut (teleport, new subject, or a jump to a clear
+    /// spot when the smooth camera lost sight of the subject).
+    pub fn last_was_cut(&self) -> bool {
+        self.cut_flag
     }
 
     /// Name of the current shot (for logs and tests).
@@ -204,7 +222,8 @@ impl Director {
     fn update_shot(&mut self, t: f64, state: &PlayerState) -> bool {
         let first = self.last_t.is_none();
         let trigger = self.index.last_trigger(t);
-        let mut cut = first || std::mem::take(&mut self.force_cut);
+        let forced = std::mem::take(&mut self.force_cut);
+        let mut cut = first || forced;
         if trigger != self.handled_trigger {
             self.handled_trigger = trigger;
             if let Some(tr) = trigger

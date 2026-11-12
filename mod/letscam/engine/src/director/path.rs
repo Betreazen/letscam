@@ -158,7 +158,11 @@ impl TrackIndex {
     /// The latest establishing trigger at or before `t`.
     pub fn last_trigger(&self, t: f64) -> Option<f64> {
         let idx = self.triggers.partition_point(|&x| x <= t);
-        (idx > 0).then(|| self.triggers[idx - 1])
+        // Before the first sample the track start counts as the trigger (the recording begins).
+        if idx == 0 {
+            return self.triggers.first().copied();
+        }
+        Some(self.triggers[idx - 1])
     }
 
     /// The latest hurt/attack time at or before `t`.

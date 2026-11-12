@@ -112,3 +112,27 @@ helper = "mods_listed.rs"
 bindings = [
   { name = "mods", ty = "&mut Vec<crate::mod_api::NativeMod>", value = "&mut *mods" },
 ]
+
+# The studio recorder drops every CustomPayload (net.rs `studio_recording_packet`), so mods'
+# messages and synced attachments never reach a replay and client-side mod state (RustCraft's
+# capsule over its seat) is lost. While LetsCam records, these two put the payload back into the
+# replay as the packet it came in; on playback the replay's handle_packet hands it to the mods.
+[[injection]]
+id = "mod_net_recorded"
+target = "horizon_client::game::native_net::Game<'_>::remote_native_net"
+kind = "HEAD"
+helper = "mod_net_recorded.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "data", ty = "&[u8]", value = "data" },
+]
+
+[[injection]]
+id = "attachment_sync_recorded"
+target = "horizon_client::game::attachment_sync::Game<'_>::remote_attachment_sync"
+kind = "HEAD"
+helper = "attachment_sync_recorded.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "data", ty = "&[u8]", value = "data" },
+]

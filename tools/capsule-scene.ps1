@@ -34,8 +34,11 @@ try {
         if ($line -eq '' -or $line.StartsWith('#')) { continue }
         Write-Host "console: $line -> $(Invoke-Console $line)"
     }
-    # The server picks up new rails and stations on its rescan, within a second.
+    # The server picks up new rails and stations on its rescan, within a second. The first tp only
+    # loaded the chunks (the bot fell through where the deck now is): onto the deck now.
     Start-Sleep -Seconds 3
+    Invoke-Console 'tp lc_a 99 150 108 -90 0' | Out-Null
+    Start-Sleep -Seconds 2
     Write-Host "climb up:   $(Invoke-Console 'data get block 129 150 110')"
     Write-Host "climb down: $(Invoke-Console 'data get block 140 150 110')"
 

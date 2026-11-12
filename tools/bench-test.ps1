@@ -46,17 +46,20 @@ try {
     Invoke-Bot $bot 'chat /letscam start' | Out-Null
     Wait-Message $bot @('Запись началась', 'не начал') 20 | Write-Host
     Start-Sleep -Seconds 3
-    # Up to the door, through it, into the middle of the house.
-    Invoke-Bot $bot "goto $x0 $y0 $($z0+5)" 60 | Out-Null
-    Invoke-Bot $bot "goto $x0 $y0 $z0" 60 | Out-Null
+    # Up to the door, through it, into the middle of the house: straight north along x of the door
+    # (goto's path finder won't take the thin open door). ~4.3 blocks/s: 12.5 blocks to the middle.
+    Invoke-Bot $bot 'look 180 0' | Out-Null
+    Invoke-Bot $bot 'move forward 2.9' 30 | Write-Host
     Start-Sleep -Seconds 2
     Invoke-Bot $bot 'key e tap' | Out-Null
     Start-Sleep -Seconds 4
     Invoke-Bot $bot 'key esc tap' | Out-Null
     Start-Sleep -Seconds 2
-    # Back out and away.
-    Invoke-Bot $bot "goto $x0 $y0 $($z0+6)" 60 | Out-Null
-    Invoke-Bot $bot "goto $($x0+6) $y0 $($z0+12)" 60 | Out-Null
+    # Back out through the door and away to the east.
+    Invoke-Bot $bot 'look 0 0' | Out-Null
+    Invoke-Bot $bot 'move forward 2.5' 30 | Write-Host
+    Invoke-Bot $bot 'look -90 0' | Out-Null
+    Invoke-Bot $bot 'move forward 1.5' 30 | Write-Host
     Start-Sleep -Seconds 3
     Invoke-Bot $bot 'chat /letscam stop' | Out-Null
     Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30 | Write-Host
