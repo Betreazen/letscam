@@ -8,7 +8,7 @@ use horizon_client::text::Text;
 use horizon_client_render::letscam::{self as bridge, engine};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const ID: &str = "letscam";
 const KEY_TOGGLE: &str = "toggle";
@@ -157,26 +157,12 @@ fn output_root(config: &engine::Config) -> PathBuf {
     }
 }
 
-/// `YYYY-MM-DD_HH-MM-SS` in UTC, for folder names that sort by time.
+/// `YYYY-MM-DD_HH-MM-SS` in the player's local time, for folder names that sort by time (chrono
+/// with its clock is a dependency of horizon-client already).
 fn stamp(now: SystemTime) -> String {
-    let secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let (days, rest) = (secs / 86_400, secs % 86_400);
-    // Howard Hinnant's civil_from_days.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}_{:02}-{:02}-{:02}",
-        rest / 3600,
-        rest / 60 % 60,
-        rest % 60
-    )
+    chrono::DateTime::<chrono::Local>::from(now)
+        .format("%Y-%m-%d_%H-%M-%S")
+        .to_string()
 }
 
 fn is_recording() -> bool {
