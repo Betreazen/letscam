@@ -64,6 +64,8 @@ struct Rec {
     last_sample: Option<Instant>,
     gui_open: bool,
     swings_seen: u32,
+    /// The studio recorder was seen stopped (and the player told) during this recording.
+    recorder_stopped: bool,
 }
 
 struct Render {
@@ -241,6 +243,7 @@ fn start_recording(game: &mut Game<'_>) {
             last_sample: None,
             gui_open: false,
             swings_seen,
+            recorder_stopped: false,
         }));
     });
     let key = game.native_mod_key(ID, KEY_TOGGLE, KEY_TOGGLE_DEFAULT);
@@ -329,6 +332,7 @@ fn tick_recording(game: &mut Game<'_>) {
     let gui_open = game
         .native_client_state()
         .is_some_and(|s| s.screen == super::native_client_services::NativeScreenKind::Other);
+    watch_recorder(game, now);
     let captured = bridge::take();
     let want_gui = STATE.with_borrow_mut(|state| {
         let Mode::Recording(rec) = &mut state.mode else {
@@ -943,4 +947,35 @@ pub fn record_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
         },
     );
     remote.session.record_clientbound(&packet);
+}
+
+/// The studio recorder stops on its own when its queue overflows or its file write fails, and
+/// says so only in its status: checked every frame while recording, told once in chat with the
+/// time and the reason, since the replay (and so the video) ends there.
+fn watch_recorder(game: &mut Game<'_>, now: Instant) {
+    let Some(status) = game.remote.as_ref().and_then(|r| r.session.recorder_status()) else {
+        return;
+    };
+    if status.active {
+        return;
+    }
+    let at = STATE.with_borrow_mut(|state| match &mut state.mode {
+        Mode::Recording(rec) if !rec.recorder_stopped => {
+            rec.recorder_stopped = true;
+            Some(now.saturating_duration_since(rec.started).as_secs())
+        }
+        _ => None,
+    });
+    if let Some(secs) = at {
+        let why = status.error.unwrap_or_else(|| "без сообщения об ошибке".into());
+        say(
+            game,
+            format!(
+                "Реплей перестал записываться на {}:{:02} ({why}, пакетов {}): ролик закончится там. Остановите запись и начните новую.",
+                secs / 60,
+                secs % 60,
+                status.packet_count
+            ),
+        );
+    }
 }

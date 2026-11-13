@@ -103,6 +103,20 @@ $checks = [ordered]@{
     'length ≈ recording'   = ([math]::Abs($duration - $expected) -le 0.1)
 }
 foreach ($k in $angles.Keys) { $checks[$k] = $angles[$k] }
+# The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
+# the whole recording, or the second half of every video has no player.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $dir.FullName 'replay.mcpr'))
+try {
+    $reader = [IO.StreamReader]::new($zip.GetEntry('metaData.json').Open())
+    $replayMs = ($reader.ReadToEnd() | ConvertFrom-Json).duration
+    $reader.Dispose()
+} finally { $zip.Dispose() }
+Write-Host "replay: $replayMs ms of $($session.duration_ms) ms recorded"
+$stopped = Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'Реплей перестал записываться[^"]*' |
+    Select-Object -First 1
+if ($stopped) { Write-Host "recorder: $($stopped.Matches[0].Value)" }
+$checks['replay covers recording'] = ($replayMs -ge $session.duration_ms - 1000)
 Write-Host "video: $($video.FullName)"
 Write-Host ("streams: " + (($probe.streams | ForEach-Object { "$($_.codec_type)/$($_.codec_name) $($_.tags.title)$($_.tags.handler_name)" }) -join '; '))
 Write-Host "duration: $duration s, recording: $expected s"
