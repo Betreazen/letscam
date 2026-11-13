@@ -424,6 +424,8 @@ thread_local! {
     static QUEUE: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
     /// The last half second of replay time the sync diagnostics logged.
     static LAST_SYNC_LOG: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+    /// The last (own body in view, free camera active) the render logged, to log only changes.
+    static LAST_BODY_IN_VIEW: std::cell::Cell<Option<(bool, bool)>> = const { std::cell::Cell::new(None) };
 }
 
 /// `/letscam render [папка] [ракурс[+ракурс…]] [x0.25] [sheet[=N]] [focus=...]`: the first word
@@ -658,6 +660,17 @@ fn tick_render(game: &mut Game<'_>) {
         _ => None,
     });
     apply_day_time(game, day_time);
+    // The player's own body is drawn only while it is "in view": in a replay the camera type is
+    // first person, so that hangs on the free camera alone, and the body went missing for seconds
+    // (spec, known issues). Third person behind keeps it drawn whatever the free camera does; the
+    // replay's close puts the camera type back.
+    game.camera_type = super::perspective::CameraType::ThirdPersonBack;
+    let in_view = (game.own_body_in_view(), game.studio_freecam.active);
+    if LAST_BODY_IN_VIEW.get() != Some(in_view) {
+        LAST_BODY_IN_VIEW.set(Some(in_view));
+        let t = game.studio_replay.as_ref().map_or(0, |d| d.position_ms());
+        log::info!("letscam: body in view={} freecam={} at t_ms={t}", in_view.0, in_view.1);
+    }
     // Sync diagnostics: where the replay shows the player, at which replay time (twice a second).
     if let (Some(driver), Some(state)) = (game.studio_replay.as_ref(), game.native_client_state())
         && let Some(eye) = state.eye_position
