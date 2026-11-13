@@ -18,8 +18,9 @@ $ErrorActionPreference = 'Stop'
 $configBackup = Set-TestConfig
 
 # The set: a 7x7 plank house with a door on its south side, a stone floor around it.
-# The flat check world stands at y -60 (the bench's check world is superflat). Built once the
-# bot stands there: the server only edits loaded chunks.
+# Built once the bot stands there: the server only edits loaded chunks. The height of the ground
+# is taken from where the bot lands: `check` makes the joint world afresh, and its superflat
+# layers have not always been the same (feet at y -60 one day, -61 the next).
 $x0 = -500; $y0 = -60; $z0 = -500
 function Build-Set {
     $lines = @(
@@ -37,8 +38,12 @@ $bot = Start-LcBot $Scratch 1920 1080
 $started = Get-Date
 try {
     Invoke-Console "gamemode creative lc_a" | Out-Null
-    Invoke-Console "tp lc_a $x0 $y0 $($z0+12) 180 0" | Out-Null
-    Start-Sleep -Seconds 5
+    # Dropped from above, so it lands on whatever the ground is.
+    Invoke-Console "tp lc_a $x0 -40 $($z0+12) 180 0" | Out-Null
+    Start-Sleep -Seconds 6
+    $feet = ((Invoke-Bot $bot 'state') | ConvertFrom-Json).player.position[1]
+    $script:y0 = [int][math]::Floor($feet + 0.01)
+    Write-Host "ground: the bot's feet at y $feet, the set at y $y0"
     Build-Set
     Invoke-Console "kill @e[type=slime,x=$($x0-30),y=$($y0-5),z=$($z0-30),dx=60,dy=30,dz=60]" | Out-Null
     Start-Sleep -Seconds 2
@@ -116,7 +121,16 @@ Write-Host "replay: $replayMs ms of $($session.duration_ms) ms recorded"
 $stopped = Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'Реплей перестал записываться[^"]*' |
     Select-Object -First 1
 if ($stopped) { Write-Host "recorder: $($stopped.Matches[0].Value)" }
-$checks['replay covers recording'] = ($replayMs -ge $session.duration_ms - 1000)
+# A replay ends at its last packet, so a quiet tail (the player standing still in a flat world)
+# is no loss: it must reach the last time the player moved or turned, not the recording's end.
+$lastMove = 0
+for ($i = 1; $i -lt $session.track.Count; $i++) {
+    $a = $session.track[$i - 1]; $b = $session.track[$i]
+    $d = [math]::Abs($b.eye[0] - $a.eye[0]) + [math]::Abs($b.eye[2] - $a.eye[2]) + [math]::Abs($b.yaw - $a.yaw)
+    if ($d -gt 0.001) { $lastMove = $b.t_ms }
+}
+Write-Host "player last moved at $lastMove ms"
+$checks['replay covers the action'] = ($replayMs -ge $lastMove - 500) -and -not $stopped
 Write-Host "video: $($video.FullName)"
 Write-Host ("streams: " + (($probe.streams | ForEach-Object { "$($_.codec_type)/$($_.codec_name) $($_.tags.title)$($_.tags.handler_name)" }) -join '; '))
 Write-Host "duration: $duration s, recording: $expected s"

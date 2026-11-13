@@ -679,7 +679,23 @@ fn tick_render(game: &mut Game<'_>) {
         let t = driver.position_ms();
         if t / 500 != LAST_SYNC_LOG.get() {
             LAST_SYNC_LOG.set(t / 500);
-            log::info!("letscam: sync t_ms={t} replay_eye={eye:?}");
+            let model = game.player_model.as_ref().map(|m| [m.position.x, m.position.y, m.position.z]);
+            let players: Vec<(u32, [f64; 3])> = game
+                .native_client_entities()
+                .iter()
+                .filter(|e| e.player_uuid.is_some())
+                .map(|e| (e.id, e.position))
+                .collect();
+            // Why the own model may not be drawn (perspective.rs player_model_shown / own_body_visible).
+            let shown = game.player_model_shown();
+            let body = game.own_body_visible();
+            let dead = game.player.as_ref().map(|p| p.health.dead_or_dying());
+            let freecam = game.studio_freecam.active;
+            let first = game.camera_type.first_person();
+            log::info!(
+                "letscam: sync t_ms={t} replay_eye={eye:?} model={model:?} players={players:?} \
+                 shown={shown} body={body} dead={dead:?} freecam={freecam} first_person={first}"
+            );
         }
     }
     enum Next {
