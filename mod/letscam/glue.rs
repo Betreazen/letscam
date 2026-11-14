@@ -679,6 +679,9 @@ fn tick_render(game: &mut Game<'_>) {
         if t / 500 != LAST_SYNC_LOG.get() {
             LAST_SYNC_LOG.set(t / 500);
             let model = game.player_model.as_ref().map(|m| [m.position.x, m.position.y, m.position.z]);
+            let model_prev = game.player_model.as_ref().map(|m| [m.previous.x, m.previous.y, m.previous.z]);
+            let model_yaw = game.player_model.as_ref().map(|m| (m.yaw, m.body_yaw));
+            let game_yaw = game.yaw;
             let players: Vec<(u32, [f64; 3])> = game
                 .native_client_entities()
                 .iter()
@@ -693,7 +696,8 @@ fn tick_render(game: &mut Game<'_>) {
             let first = game.camera_type.first_person();
             log::info!(
                 "letscam: sync t_ms={t} replay_eye={eye:?} model={model:?} players={players:?} \
-                 shown={shown} body={body} dead={dead:?} freecam={freecam} first_person={first}"
+                 shown={shown} body={body} dead={dead:?} freecam={freecam} first_person={first} \
+                 model_prev={model_prev:?} model_yaw={model_yaw:?} game_yaw={game_yaw}"
             );
         }
     }
