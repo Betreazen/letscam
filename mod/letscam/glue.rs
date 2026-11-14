@@ -56,6 +56,74 @@ fn apply_day_time(game: &mut Game<'_>, start: Option<i64>) {
     game.world.day_time = start + ticks;
 }
 
+/// The live session's registry order that a standalone replay lacks: the configuration phase's
+/// RegistryData never reaches the .mcpr, so `init_remote_for_replay` leaves the chunk biome map
+/// empty and every biome decodes as built-in biome 0 (badlands: brown grass), and the world clock
+/// in SetTime finds no name. Saved when the recording starts, put back before the first packet.
+const REGISTRIES_FILE: &str = "registries.json";
+const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
+const CLOCK_REGISTRY: &str = "minecraft:world_clock";
+
+thread_local! {
+    /// Registries to put into the replay's remote before its first packet is dispatched.
+    static PENDING_REGISTRIES: RefCell<Option<(Vec<String>, Vec<String>)>> = const { RefCell::new(None) };
+}
+
+fn save_registries(game: &Game<'_>, dir: &Path) {
+    let Some(remote) = game.remote.as_ref() else { return };
+    let names = |key: &str| -> Vec<String> {
+        remote
+            .registries
+            .registries
+            .get(key)
+            .map(|list| list.iter().map(|(name, _)| name.clone()).collect())
+            .unwrap_or_default()
+    };
+    let value = serde_json::json!({ "biomes": names(BIOME_REGISTRY), "clocks": names(CLOCK_REGISTRY) });
+    if let Err(error) = std::fs::write(dir.join(REGISTRIES_FILE), value.to_string()) {
+        log::warn!("letscam: {REGISTRIES_FILE}: {error}");
+    }
+}
+
+fn load_registries(dir: &Path) -> Option<(Vec<String>, Vec<String>)> {
+    let text = std::fs::read_to_string(dir.join(REGISTRIES_FILE)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let list = |key: &str| -> Vec<String> {
+        value[key]
+            .as_array()
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default()
+    };
+    Some((list("biomes"), list("clocks")))
+}
+
+/// The recorded biome order as the replay's chunk biome map (what `set_registries` does on a
+/// live join) and both registries into `remote.registries`.
+fn inject_registries(game: &mut Game<'_>, biomes: Vec<String>, clocks: Vec<String>) {
+    if biomes.is_empty() {
+        return;
+    }
+    let ids: Vec<u16> = biomes.iter().map(|name| world_biomes!(game).id(name)).collect();
+    let Some(remote) = game.remote.as_mut() else { return };
+    let layout = remote.chunk_format.layout();
+    let bits = horizon_protocol::registry::ceil_log2(biomes.len());
+    remote.chunk_format = std::sync::Arc::new(
+        super::remote_chunks::ChunkFormat::new(&remote.dimension, ids, bits).in_column(layout),
+    );
+    let mut registries = (*remote.registries).clone();
+    let count = biomes.len();
+    registries
+        .registries
+        .insert(BIOME_REGISTRY.to_owned(), biomes.into_iter().map(|n| (n, None)).collect());
+    if !clocks.is_empty() {
+        registries
+            .registries
+            .insert(CLOCK_REGISTRY.to_owned(), clocks.into_iter().map(|n| (n, None)).collect());
+    }
+    remote.registries = std::sync::Arc::new(registries);
+    log::info!("letscam: replay registries restored ({count} biomes)");
+}
+
 struct Rec {
     recording: engine::Recording,
     started: Instant,
@@ -219,6 +287,7 @@ fn start_recording(game: &mut Game<'_>) {
         say(game, warning.clone());
     }
     save_world_time(game, &dir);
+    save_registries(game, &dir);
     let swings_seen = game.swings_started;
     STATE.with_borrow_mut(|state| {
         state.mode = Mode::Recording(Box::new(Rec {
@@ -521,6 +590,8 @@ fn open_replay(game: &mut Game<'_>) {
     });
     let Some((job, dir, focus)) = taken else { return };
     let path = dir.join(REPLAY_FILE);
+    // The recorded registries go in at the replay's first advance, before any packet is decoded.
+    PENDING_REGISTRIES.with_borrow_mut(|p| *p = load_registries(&dir));
     let opened = game.open_studio_replay(&path.to_string_lossy());
     let ok = matches!(&opened, Ok(v) if v["ok"].as_bool() == Some(true));
     if !ok {
@@ -633,6 +704,9 @@ fn apply_pose(game: &mut Game<'_>, pose: engine::CameraPose) {
 /// HEAD of `advance_studio_replay`: while rendering, the replay moves one video frame after each
 /// captured frame and not at all otherwise, whatever the wall clock did.
 pub fn before_replay_advance(game: &mut Game<'_>) {
+    if let Some((biomes, clocks)) = PENDING_REGISTRIES.with_borrow_mut(Option::take) {
+        inject_registries(game, biomes, clocks);
+    }
     let now = Instant::now();
     let step = STATE.with_borrow_mut(|state| {
         let Mode::Rendering(render) = &mut state.mode else {
@@ -685,6 +759,14 @@ fn tick_render(game: &mut Game<'_>) {
     } else {
         super::perspective::CameraType::ThirdPersonBack
     };
+    // The client's own physics still ticks in a standalone replay, on the wall clock and with
+    // block collision (doors included), and moves the player between recorded positions, which
+    // only come when the recorded player moved. Still velocity, and the physics' previous
+    // position kept at the player, leave the recorded positions alone.
+    if let Some(player) = game.player.as_mut() {
+        player.velocity = Default::default();
+        game.previous_position = player.position;
+    }
     let in_view = (game.own_body_in_view(), game.studio_freecam.active);
     if LAST_BODY_IN_VIEW.get() != Some(in_view) {
         LAST_BODY_IN_VIEW.set(Some(in_view));
