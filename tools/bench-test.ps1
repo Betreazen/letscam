@@ -15,12 +15,17 @@ param(
     # An empty doorway instead of the open oak door (to tell whether the door matters).
     [switch]$NoDoor,
     # The render command's angles, `+`-joined; `fixed:` shots look at the doorway from the south.
-    [string]$Angles = 'auto+orbit+side+top'
+    [string]$Angles = 'auto+orbit+side+top',
+    # Skip the key editor and the `keys` angle.
+    [switch]$NoKeys
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 $AngleList = @($Angles -split '\+' | Where-Object { $_ })
 $configBackup = Set-TestConfig
+# The first client's log, kept when the bot joins again after the key editor.
+$recordLog = Join-Path $Scratch 'lc_a-record.log'
+Remove-Item -LiteralPath $recordLog -Force -ErrorAction SilentlyContinue
 
 # The set: a 7x7 plank house with a door on its south side, a stone floor around it.
 # Built once the bot stands there: the server only edits loaded chunks. The height of the ground
@@ -85,8 +90,36 @@ try {
     Invoke-Bot $bot 'chat /letscam stop' | Out-Null
     Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30 | Write-Host
 
-    # One recording, four angles in a row, each with its contact sheet.
-    Invoke-Bot $bot "chat /letscam render $Angles sheet" | Out-Null
+    $renderAngles = $Angles
+    if (-not $NoKeys) {
+        # The key editor: three keyframes 5 s of replay apart, the free camera moved between them.
+        # Closing it leaves the game on the title screen, so the bot joins again to render.
+        Invoke-Bot $bot 'chat /letscam edit' | Out-Null
+        Wait-Message $bot @('letscam: key editor open[^\n]*', 'не открылся[^\n]*') 120 | Write-Host
+        Start-Sleep -Seconds 5
+        foreach ($i in 1..3) {
+            Invoke-Bot $bot 'key n tap' | Out-Null
+            if ($i -lt 3) {
+                foreach ($s in 1..5) { Invoke-Bot $bot 'key right tap' | Out-Null; Start-Sleep -Milliseconds 700 }
+                Invoke-Bot $bot 'key d down' | Out-Null
+                Start-Sleep -Seconds 1
+                Invoke-Bot $bot 'key d up' | Out-Null
+            }
+        }
+        Invoke-Bot $bot 'key enter tap' | Out-Null
+        $script:keysLine = Wait-Message $bot @('letscam: key editor closed, \d+ keyframes') 60
+        Write-Host $keysLine
+        $log = [IO.Path]::ChangeExtension($bot.Socket, 'log')
+        Copy-Item -LiteralPath $log -Destination $recordLog -Force
+        Stop-LcBot $bot
+        Start-Sleep -Seconds 3
+        $bot = Start-LcBot $Scratch 1920 1080
+        $renderAngles = "$Angles+keys"
+        $script:AngleList += 'keys'
+    }
+
+    # One recording, every angle in a row, each with its contact sheet.
+    Invoke-Bot $bot "chat /letscam render $renderAngles sheet" | Out-Null
     $done = Wait-Renders $bot $AngleList.Count ($RenderTimeoutSec * $AngleList.Count)
     Write-Host $done
     Invoke-Bot $bot "screenshot $(Join-Path $Scratch 'after-render.png')" | Out-Null
@@ -128,6 +161,10 @@ $checks = [ordered]@{
 }
 foreach ($k in $angleChecks.Keys) { $checks[$k] = $angleChecks[$k] }
 $checks['window starts recording'] = [bool]$windowStarted
+if (-not $NoKeys) {
+    $checks['key editor saved 3 keys'] = [bool]($keysLine -match 'closed, 3 keyframes')
+    $checks['render follows 3 keys'] = [bool](Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'keys path with 3 keyframes' -Quiet)
+}
 # How fast each angle rendered (the encoder's own timing, one line per finished render).
 Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render stats: [^"]*' |
     ForEach-Object { Write-Host $_.Matches[0].Value }
@@ -141,7 +178,8 @@ try {
     $reader.Dispose()
 } finally { $zip.Dispose() }
 Write-Host "replay: $replayMs ms of $($session.duration_ms) ms recorded"
-$stopped = Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'Реплей перестал записываться[^"]*' |
+$logs = @([IO.Path]::ChangeExtension($bot.Socket, 'log')) + @($recordLog | Where-Object { Test-Path $_ })
+$stopped = Select-String -Path $logs -Pattern 'Реплей перестал записываться[^"]*' |
     Select-Object -First 1
 if ($stopped) { Write-Host "recorder: $($stopped.Matches[0].Value)" }
 # A replay ends at its last packet, so a quiet tail (the player standing still in a flat world)

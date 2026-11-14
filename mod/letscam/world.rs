@@ -115,3 +115,25 @@ pub(super) fn restore_pending(game: &mut Game<'_>) {
         inject_registries(game, biomes, clocks);
     }
 }
+
+/// Keeps the replay's own player as recorded, for the render and the key editor alike.
+pub(super) fn pin_replay_player(game: &mut Game<'_>, first_person: bool) {
+    // The player's own body is drawn only while it is "in view": in a replay the camera type is
+    // first person, so that hangs on the free camera alone. Third person behind keeps it drawn
+    // whatever the free camera does; the replay's close puts the camera type back. The `fp`
+    // angle is the opposite case: its camera sits in the head, so the body must stay hidden
+    // (first person, and the free camera off below).
+    game.camera_type = if first_person {
+        super::perspective::CameraType::FirstPerson
+    } else {
+        super::perspective::CameraType::ThirdPersonBack
+    };
+    // The client's own physics still ticks in a standalone replay, on the wall clock and with
+    // block collision (doors included), and moves the player between recorded positions, which
+    // only come when the recorded player moved. Still velocity, and the physics' previous
+    // position kept at the player, leave the recorded positions alone.
+    if let Some(player) = game.player.as_mut() {
+        player.velocity = Default::default();
+        game.previous_position = player.position;
+    }
+}

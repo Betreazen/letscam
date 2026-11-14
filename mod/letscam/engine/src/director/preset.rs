@@ -14,6 +14,9 @@ pub enum ShotPreset {
     Front,
     Top,
     Fixed([f64; 3]),
+    /// The camera path the player keyed in the replay (Horizon's studio track, spec section 15),
+    /// posed by the glue; the director frames it like `Auto` where the path has no keyframes.
+    Keys,
 }
 
 impl ShotPreset {
@@ -28,11 +31,12 @@ impl ShotPreset {
             ShotPreset::Front => "front",
             ShotPreset::Top => "top",
             ShotPreset::Fixed(_) => "fixed",
+            ShotPreset::Keys => "keys",
         }
     }
 }
 
-pub const PRESET_WORDS: &str = "auto, fp, shoulder, orbit, side, front, top, fixed:x,y,z";
+pub const PRESET_WORDS: &str = "auto, fp, shoulder, orbit, side, front, top, fixed:x,y,z, keys";
 
 impl FromStr for ShotPreset {
     type Err = String;
@@ -50,6 +54,7 @@ impl FromStr for ShotPreset {
             "side" => ShotPreset::Side,
             "front" => ShotPreset::Front,
             "top" => ShotPreset::Top,
+            "keys" | "ключи" => ShotPreset::Keys,
             "fixed" => return Err("для fixed нужна точка: fixed:x,y,z".into()),
             _ => return Err(format!("неизвестный ракурс «{s}»; есть: {PRESET_WORDS}")),
         })
@@ -93,6 +98,9 @@ mod tests {
         let p = |s: &str| s.parse::<ShotPreset>();
         assert_eq!(p("auto"), Ok(ShotPreset::Auto));
         assert_eq!(p("FP"), Ok(ShotPreset::FirstPerson));
+        assert_eq!(p("keys"), Ok(ShotPreset::Keys));
+        assert_eq!(p("Ключи"), Ok(ShotPreset::Keys));
+        assert_eq!(ShotPreset::Keys.word(), "keys");
         assert_eq!(p("first"), Ok(ShotPreset::FirstPerson));
         assert_eq!(p("shoulder"), Ok(ShotPreset::Shoulder));
         assert_eq!(p("orbit"), Ok(ShotPreset::Orbit));

@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 const LEFT_BUTTON: i32 = 0;
-const WIDTH: f32 = 340.0;
+const WIDTH: f32 = 460.0;
 const ROW_HEIGHT: f32 = 22.0;
 const MAX_ROWS: usize = 8;
 const PANEL: u32 = 0xE0181820;
@@ -23,13 +23,16 @@ const WHITE: u32 = 0xFFFFFF;
 const GREY: u32 = 0xA0A0A0;
 const GOLD: u32 = 0xFFD060;
 /// Four angles of one recording in a row, each with its contact sheet.
-const ANGLES: &str = "auto+side+orbit+top";
+const FOUR_ANGLES: &[&str] = &["auto+side+orbit+top", "sheet"];
 
 /// What a click asked for, done on the next frame with the game writable.
 #[derive(Clone, Debug)]
 pub enum Action {
     ToggleRecording,
-    Render { folder: String, angles: Option<&'static str> },
+    /// `/letscam render <folder> <words…>`.
+    Render { folder: String, words: &'static [&'static str] },
+    /// `/letscam edit <folder>`: the key editor.
+    Edit { folder: String },
     OpenFolder(PathBuf),
 }
 
@@ -40,6 +43,8 @@ struct Entry {
     name: String,
     seconds: u64,
     rendered: bool,
+    /// Keyframes of the camera path the key editor saved.
+    keys: usize,
 }
 
 thread_local! {
@@ -61,7 +66,8 @@ fn entry(dir: PathBuf) -> Entry {
             f.is_ok_and(|f| matches!(f.path().extension().and_then(|x| x.to_str()), Some("mp4" | "mkv")))
         })
     });
-    Entry { dir, name, seconds, rendered }
+    let keys = super::letscam_edit::saved_keys(&dir);
+    Entry { dir, name, seconds, rendered, keys }
 }
 
 /// Opens the window, reading the recording list once (not every frame).
@@ -97,18 +103,16 @@ fn buttons(screen: &NativeScreenView<'_>, entries: &[Entry]) -> Vec<([f32; 4], A
     out.push(([x + 10.0, y + 22.0, WIDTH - 20.0, 18.0], Action::ToggleRecording, record.to_owned()));
     for (i, e) in entries.iter().enumerate() {
         let row_y = y + 52.0 + i as f32 * ROW_HEIGHT;
-        let folder = e.name.clone();
-        out.push((
-            [x + 178.0, row_y, 46.0, 16.0],
-            Action::Render { folder: folder.clone(), angles: None },
-            "Ролик".into(),
-        ));
-        out.push((
-            [x + 228.0, row_y, 62.0, 16.0],
-            Action::Render { folder, angles: Some(ANGLES) },
-            "4 ракурса".into(),
-        ));
-        out.push(([x + 294.0, row_y, 36.0, 16.0], Action::OpenFolder(e.dir.clone()), "Папка".into()));
+        let render = |words: &'static [&'static str]| Action::Render { folder: e.name.clone(), words };
+        out.push(([x + 178.0, row_y, 46.0, 16.0], render(&[]), "Ролик".into()));
+        out.push(([x + 228.0, row_y, 62.0, 16.0], render(FOUR_ANGLES), "4 ракурса".into()));
+        let edit = if e.keys > 0 { format!("Ключи {}", e.keys) } else { "Ключи".to_owned() };
+        out.push(([x + 294.0, row_y, 48.0, 16.0], Action::Edit { folder: e.name.clone() }, edit));
+        // A path needs two keyframes before there is anything to follow.
+        if e.keys >= 2 {
+            out.push(([x + 346.0, row_y, 62.0, 16.0], render(&["keys"]), "По ключам".into()));
+        }
+        out.push(([x + 412.0, row_y, 38.0, 16.0], Action::OpenFolder(e.dir.clone()), "Папка".into()));
     }
     out
 }
@@ -161,7 +165,7 @@ pub fn draw(game: &Game<'_>, batch: &mut HudBatch, screen: &NativeScreenView<'_>
             let line = format!("{} · {}:{:02}{mark}", e.name, e.seconds / 60, e.seconds % 60);
             game.native_text(batch, &line, [x + 10.0, row_y + 4.0], WHITE, true);
         }
-        let hint = "Ролик: камера-режиссёр. 4 ракурса: авто, сбоку, облёт, сверху.";
+        let hint = "Ролик: камера-режиссёр. 4 ракурса: авто, сбоку, облёт, сверху. Ключи: свой путь камеры.";
         let footer_y = y + panel_height(entries.len()) - 14.0;
         game.native_text(batch, hint, [x + 10.0, footer_y], GREY, true);
     });

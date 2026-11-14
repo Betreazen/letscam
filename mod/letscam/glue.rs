@@ -5,6 +5,7 @@
 // Compiled as the child module `game::letscam_glue`, so it reads Game's private fields.
 use super::Game;
 use super::letscam_shot::{self as shot, FocusSpec};
+use super::letscam_edit as edit;
 use super::letscam_world as world;
 use horizon_client::text::Text;
 use horizon_client_render::letscam::{self as bridge, engine};
@@ -20,7 +21,7 @@ const KEY_MENU_DEFAULT: &str = "key.keyboard.f10";
 const KEY_CANCEL: &str = "key.keyboard.escape";
 const CONFIG_FILE: &str = "config/letscam-client.toml";
 const DEFAULT_OUTPUT: &str = "letscam";
-const REPLAY_FILE: &str = "replay.mcpr";
+pub const REPLAY_FILE: &str = "replay.mcpr";
 const TRACK_PERIOD: Duration = Duration::from_millis(50);
 /// Paused replay frames drawn before the first captured one, so the terrain around the camera
 /// is meshed and the first frames aren't empty.
@@ -55,6 +56,9 @@ struct Render {
     /// What `focus=` asked for, and the entity it settled on.
     focus: Option<FocusSpec>,
     focus_id: Option<u32>,
+    /// The studio camera path the replay carried, taken out of the game so its line isn't
+    /// drawn in the video; the `keys` angle follows it.
+    keys: horizon_client::studio::CameraTrack,
     /// The time of day the recording began with (`world_time.json`), if it was saved.
     day_time: Option<i64>,
 }
@@ -116,6 +120,11 @@ fn stamp(now: SystemTime) -> String {
         .to_string()
 }
 
+/// Neither recording nor rendering (the key editor keeps its own state, [`edit::is_active`]).
+pub fn is_idle() -> bool {
+    STATE.with_borrow(|s| matches!(s.mode, Mode::Idle))
+}
+
 pub fn is_recording() -> bool {
     STATE.with_borrow(|state| matches!(state.mode, Mode::Recording(_)))
 }
@@ -127,7 +136,7 @@ pub fn is_rendering() -> bool {
 // ---- recording ---------------------------------------------------------------------------
 
 pub fn start_recording(game: &mut Game<'_>) {
-    if !STATE.with_borrow(|s| matches!(s.mode, Mode::Idle)) {
+    if !is_idle() || edit::is_active() {
         say(game, "Уже идёт запись или рендер.");
         return;
     }
@@ -379,7 +388,7 @@ thread_local! {
 /// `/letscam render [папка] [ракурс[+ракурс…]] [x0.25] [sheet[=N]] [focus=...]`: the first word
 /// is the recording's folder when such a folder exists, the rest are the crate's render options.
 pub fn start_render(game: &mut Game<'_>, words: &[&str]) {
-    if !STATE.with_borrow(|s| matches!(s.mode, Mode::Idle)) {
+    if !is_idle() || edit::is_active() {
         say(game, "Сначала остановите запись или дождитесь конца рендера.");
         return;
     }
@@ -486,6 +495,11 @@ fn open_replay(game: &mut Game<'_>) {
         driver.set_paused(true);
     }
     let day_time = world::load_day_time(&dir);
+    let keys = std::mem::take(&mut game.studio_freecam.track);
+    game.studio_freecam.locked_to_path = false;
+    if job.options().preset == engine::ShotPreset::Keys {
+        log::info!("letscam: keys path with {} keyframes", keys.len());
+    }
     let hide_gui_before = game.ui.hide_gui;
     game.ui.hide_gui = true;
     STATE.with_borrow_mut(|state| {
@@ -500,6 +514,7 @@ fn open_replay(game: &mut Game<'_>) {
             hide_gui_before,
             focus,
             focus_id: None,
+            keys,
             day_time,
         }));
     });
@@ -542,6 +557,18 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
     }
 }
 
+fn replay_ms(game: &Game<'_>) -> u32 {
+    game.studio_replay.as_ref().map_or(0, |d| d.position_ms())
+}
+
+/// The `keys` angle: the studio path's pose at the replay's time, the director's elsewhere.
+fn keyed_pose(render: &Render, t_ms: u32, pose: engine::CameraPose) -> engine::CameraPose {
+    if render.job.options().preset != engine::ShotPreset::Keys {
+        return pose;
+    }
+    shot::keyed_pose(&render.keys, t_ms).unwrap_or(pose)
+}
+
 fn tick_render(game: &mut Game<'_>) {
     let (day_time, first_person) = STATE.with_borrow(|state| match &state.mode {
         Mode::Rendering(render) => (
@@ -551,24 +578,7 @@ fn tick_render(game: &mut Game<'_>) {
         _ => (None, false),
     });
     world::apply_day_time(game, day_time);
-    // The player's own body is drawn only while it is "in view": in a replay the camera type is
-    // first person, so that hangs on the free camera alone. Third person behind keeps it drawn
-    // whatever the free camera does; the replay's close puts the camera type back. The `fp`
-    // angle is the opposite case: its camera sits in the head, so the body must stay hidden
-    // (first person, and the free camera off below).
-    game.camera_type = if first_person {
-        super::perspective::CameraType::FirstPerson
-    } else {
-        super::perspective::CameraType::ThirdPersonBack
-    };
-    // The client's own physics still ticks in a standalone replay, on the wall clock and with
-    // block collision (doors included), and moves the player between recorded positions, which
-    // only come when the recorded player moved. Still velocity, and the physics' previous
-    // position kept at the player, leave the recorded positions alone.
-    if let Some(player) = game.player.as_mut() {
-        player.velocity = Default::default();
-        game.previous_position = player.position;
-    }
+    world::pin_replay_player(game, first_person);
     super::letscam_diag::log_frame(game);
     enum Next {
         Wait,
@@ -603,8 +613,9 @@ fn tick_render(game: &mut Game<'_>) {
         Next::Wait => {}
         Next::Fail(why) => finish_render(game, Err(why)),
         Next::Warm => {
+            let game_ms = replay_ms(game);
             let pose = STATE.with_borrow_mut(|state| match &mut state.mode {
-                Mode::Rendering(render) => render.job.peek_first_pose(),
+                Mode::Rendering(render) => render.job.peek_first_pose().map(|p| keyed_pose(render, game_ms, p)),
                 _ => None,
             });
             if let Some(pose) = pose {
@@ -620,6 +631,7 @@ fn tick_render(game: &mut Game<'_>) {
             request_capture(game, TAG_RENDER);
         }
         Next::Pose => {
+            let game_ms = replay_ms(game);
             let (spec, mut locked) = STATE.with_borrow(|state| match &state.mode {
                 Mode::Rendering(render) => (render.focus.clone(), render.focus_id),
                 _ => (None, None),
@@ -635,7 +647,7 @@ fn tick_render(game: &mut Game<'_>) {
                             log::info!("letscam: focus on entity {locked:?}");
                         }
                         render.focus_id = locked;
-                        render.job.next_pose_focus(&probe, focus)
+                        render.job.next_pose_focus(&probe, focus).map(|p| keyed_pose(render, game_ms, p))
                     }
                     _ => None,
                 })
@@ -716,6 +728,7 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
 // ---- hooks -------------------------------------------------------------------------------
 
 pub fn on_frame(game: &mut Game<'_>) {
+    edit::on_frame(game);
     run_screen_action(game);
     enum Phase {
         Idle,
@@ -745,6 +758,10 @@ pub fn on_frame(game: &mut Game<'_>) {
 
 pub fn on_key(game: &mut Game<'_>, key: &str, pressed: bool) {
     if !pressed {
+        return;
+    }
+    if edit::is_active() {
+        edit::on_key(game, key);
         return;
     }
     if is_rendering() {
@@ -777,14 +794,15 @@ fn run_screen_action(game: &mut Game<'_>) {
                 start_recording(game);
             }
         }
-        Action::Render { folder, angles } => {
+        Action::Render { folder, words } => {
             game.native_mod_screen_close(ID);
-            let mut words = vec![folder.as_str()];
-            // Several angles come with their contact sheets, to compare them at a glance.
-            if let Some(angles) = angles {
-                words.extend([angles, "sheet"]);
-            }
-            start_render(game, &words);
+            let mut all = vec![folder.as_str()];
+            all.extend(words);
+            start_render(game, &all);
+        }
+        Action::Edit { folder } => {
+            game.native_mod_screen_close(ID);
+            edit::start(game, Some(&folder));
         }
         Action::OpenFolder(dir) => {
             if let Err(error) = std::process::Command::new("explorer").arg(&dir).spawn() {
@@ -806,6 +824,7 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
         Some("stop") => stop_recording(game),
         Some("list") => list(game),
         Some("render") => start_render(game, &words.collect::<Vec<_>>()),
+        Some("edit") => edit::start(game, words.next()),
         Some("cancel") => finish_render(game, Err("отменён".into())),
         Some("reload") => {
             STATE.with_borrow_mut(|state| state.config = None);
@@ -814,12 +833,13 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
         }
         _ => say(
             game,
-            "/letscam (окно, F10) | start | stop | list | cancel | reload | render [папка] [auto|fp|shoulder|orbit|side|front|top|fixed:x,y,z] [x0.25] [sheet[=тиков]] [focus=id|тип|ride]",
+            "/letscam (окно, F10) | start | stop | list | cancel | reload | edit [папка] (ключи камеры) | render [папка] [auto|fp|shoulder|orbit|side|front|top|fixed:x,y,z|keys] [x0.25] [sheet[=тиков]] [focus=id|тип|ride]",
         ),
     }
 }
 
 pub fn on_hud(game: &mut Game<'_>, batch: &mut horizon_client::hud::HudBatch) {
+    edit::on_hud(game, batch);
     let elapsed = STATE.with_borrow(|state| match &state.mode {
         Mode::Recording(rec) => Some(Instant::now().saturating_duration_since(rec.started)),
         _ => None,

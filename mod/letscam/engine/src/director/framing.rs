@@ -69,8 +69,10 @@ impl Director {
                 self.set_angles(yaw_of(look), pitch_of(look), dt, true);
                 self.finish_frame(t_ms, p)
             }
-            (ShotPreset::Auto, None) => self.auto_player(t_ms, world, &state, dt),
-            (ShotPreset::Auto, Some(f)) => {
+            (ShotPreset::Auto | ShotPreset::Keys, None) => {
+                self.auto_player(t_ms, world, &state, dt)
+            }
+            (ShotPreset::Auto | ShotPreset::Keys, Some(f)) => {
                 let wish = self.focus_auto_wish(t_ms, &subject, &f, cut);
                 let input = RigInput {
                     t: t_ms,

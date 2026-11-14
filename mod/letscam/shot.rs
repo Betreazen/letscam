@@ -97,3 +97,20 @@ pub(super) fn apply_pose(game: &mut Game<'_>, pose: engine::CameraPose, first_pe
         cam.activate(position, pose.yaw, pose.pitch, pose.fov);
     }
 }
+
+/// The studio camera path's pose at `t_ms`, for the `keys` angle: a path needs two keyframes.
+pub(super) fn keyed_pose(
+    track: &horizon_client::studio::CameraTrack,
+    t_ms: u32,
+) -> Option<engine::CameraPose> {
+    if track.len() < 2 {
+        return None;
+    }
+    let pose = track.evaluate(t_ms)?;
+    Some(engine::CameraPose {
+        pos: pose.position.to_array(),
+        yaw: pose.yaw,
+        pitch: pose.pitch,
+        fov: pose.fov,
+    })
+}
