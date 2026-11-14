@@ -682,6 +682,22 @@ fn tick_render(game: &mut Game<'_>) {
             let model_prev = game.player_model.as_ref().map(|m| [m.previous.x, m.previous.y, m.previous.z]);
             let model_yaw = game.player_model.as_ref().map(|m| (m.yaw, m.body_yaw));
             let game_yaw = game.yaw;
+            // The light the own model is drawn with (perspective.rs player_model_geometry): the
+            // cell at eye height, sky light in the high nibble. A door there is the suspect.
+            let light = game.player_model.as_ref().zip(game.player.as_ref()).map(|(m, p)| {
+                let eye = f64::from(p.dimensions.eye_height);
+                let probe = super::perspective::entity_light_block(m.position, m.extra.crouching, eye);
+                let feet = [
+                    m.position.x.floor() as i32,
+                    m.position.y.floor() as i32,
+                    m.position.z.floor() as i32,
+                ];
+                (
+                    probe,
+                    format!("{:#04x}", game.world.light(probe[0], probe[1], probe[2])),
+                    format!("{:#04x}", game.world.light(feet[0], feet[1], feet[2])),
+                )
+            });
             // Every creature within 8 blocks of the replay player, of any type: a second figure of
             // the player (drawn ~4 s ahead of the own model in the doorway scene) shows up here.
             let near = |p: [f64; 3]| {
@@ -702,7 +718,8 @@ fn tick_render(game: &mut Game<'_>) {
             log::info!(
                 "letscam: sync t_ms={t} replay_eye={eye:?} model={model:?} players={players:?} \
                  shown={shown} body={body} dead={dead:?} freecam={freecam} first_person={first} \
-                 model_prev={model_prev:?} model_yaw={model_yaw:?} game_yaw={game_yaw}"
+                 model_prev={model_prev:?} model_yaw={model_yaw:?} game_yaw={game_yaw} \
+                 light(probe,eye,feet)={light:?}"
             );
         }
     }
