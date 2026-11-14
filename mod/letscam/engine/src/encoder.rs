@@ -1,16 +1,16 @@
 //! Runs ffmpeg: frames go to its stdin from a writer thread through a small bounded channel.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::{Codec, Config};
-use crate::encode::{AudioInput, ffmpeg_args_with_duration};
+use crate::encode::{AudioInput, RawInput, build_args};
+use crate::frame_queue::FrameQueue;
 
 const QUEUE_FRAMES: usize = 4;
 const STDERR_LINES: usize = 40;
@@ -20,8 +20,7 @@ type Tail = Arc<parking_lot::Mutex<VecDeque<String>>>;
 
 pub struct Encoder {
     child: Option<Child>,
-    tx: Option<SyncSender<Vec<u8>>>,
-    writer: Option<JoinHandle<Result<(), String>>>,
+    queue: FrameQueue,
     stderr: Tail,
     stderr_thread: Option<JoinHandle<()>>,
     out: PathBuf,
@@ -72,13 +71,25 @@ impl Encoder {
         audio: &[AudioInput],
         duration_s: Option<f64>,
     ) -> Result<Encoder, String> {
-        if src_w == 0 || src_h == 0 {
-            return Err(format!("неверный размер кадра {src_w}x{src_h}"));
+        let src = RawInput::new(cfg, src_w, src_h, src_bgra);
+        Encoder::start_raw(cfg, out, src, audio, duration_s)
+    }
+
+    /// Starts ffmpeg for frames described by `src` (lets a caller force the CPU colour path).
+    pub(crate) fn start_raw(
+        cfg: &Config,
+        out: &Path,
+        src: RawInput,
+        audio: &[AudioInput],
+        duration_s: Option<f64>,
+    ) -> Result<Encoder, String> {
+        if src.w == 0 || src.h == 0 {
+            return Err(format!("неверный размер кадра {}x{}", src.w, src.h));
         }
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        let args = ffmpeg_args_with_duration(cfg, out, src_w, src_h, src_bgra, audio, duration_s);
+        let args = build_args(cfg, out, src, audio, duration_s);
         log::info!("LetsCam: {} {}", cfg.ffmpeg, args.join(" "));
         let mut child = command(&cfg.ffmpeg)
             .args(&args)
@@ -101,27 +112,15 @@ impl Encoder {
                 }
             })
         });
-        let mut stdin = child.stdin.take().ok_or("нет stdin у ffmpeg")?;
-        let (tx, rx) = sync_channel::<Vec<u8>>(QUEUE_FRAMES);
-        let writer = std::thread::Builder::new()
-            .name("letscam-ffmpeg-writer".into())
-            .spawn(move || {
-                for frame in rx {
-                    stdin
-                        .write_all(&frame)
-                        .map_err(|e| format!("запись кадра в ffmpeg: {e}"))?;
-                }
-                stdin.flush().map_err(|e| format!("ffmpeg stdin: {e}"))
-            })
-            .map_err(|e| format!("поток записи кадров: {e}"))?;
+        let stdin = child.stdin.take().ok_or("нет stdin у ffmpeg")?;
+        let queue = FrameQueue::start(stdin, QUEUE_FRAMES)?;
         Ok(Encoder {
             child: Some(child),
-            tx: Some(tx),
-            writer: Some(writer),
+            queue,
             stderr,
             stderr_thread,
             out: out.to_path_buf(),
-            frame_bytes: src_w as usize * src_h as usize * 4,
+            frame_bytes: src.w as usize * src.h as usize * 4,
             frames: 0,
         })
     }
@@ -145,9 +144,7 @@ impl Encoder {
                 self.frame_bytes
             ));
         }
-        let alive = self.writer.as_ref().is_some_and(|w| !w.is_finished());
-        let sent = alive && self.tx.as_ref().is_some_and(|tx| tx.send(pixels).is_ok());
-        if !sent {
+        if !self.queue.push(pixels) {
             return Err(self.died());
         }
         self.frames += 1;
@@ -158,12 +155,25 @@ impl Encoder {
         self.frames
     }
 
+    /// Total time [`Encoder::push_frame`] waited for room in the queue (ffmpeg behind).
+    pub fn queue_wait(&self) -> Duration {
+        self.queue.queue_wait()
+    }
+
+    /// Total time the writer thread was blocked writing frames to ffmpeg's stdin.
+    pub fn pipe_write(&self) -> Duration {
+        self.queue.pipe_write()
+    }
+
+    /// ffmpeg's process id while it runs (the benchmark reads its CPU time).
+    #[cfg(all(test, windows))]
+    pub(crate) fn ffmpeg_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
     /// Closes stdin, waits for ffmpeg and checks its exit status.
     pub fn finish(mut self) -> Result<PathBuf, String> {
-        drop(self.tx.take());
-        let write = self.writer.take().map_or(Ok(()), |w| {
-            w.join().unwrap_or(Err("поток записи кадров упал".into()))
-        });
+        let write = self.queue.join();
         let status = self
             .child
             .take()
@@ -194,14 +204,12 @@ impl Encoder {
     }
 
     fn kill(&mut self) {
-        drop(self.tx.take());
+        self.queue.hang_up();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        if let Some(w) = self.writer.take() {
-            let _ = w.join();
-        }
+        let _ = self.queue.join();
         if let Some(t) = self.stderr_thread.take() {
             let _ = t.join();
         }

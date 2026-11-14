@@ -1,6 +1,7 @@
 //! RenderJob over a synthetic recording dir: frame count, audio tracks, PiP, cleanup.
 
 use std::path::Path;
+use std::time::Duration;
 
 use crate::config::{Config, Container};
 use crate::director::OpenWorld;
@@ -169,6 +170,39 @@ fn rejects_wrong_sizes_and_empty_sessions() {
     .expect("save");
     assert!(RenderJob::open(&empty, &cfg).is_err());
     assert!(RenderJob::open(&tmp.path().join("missing"), &cfg).is_err());
+}
+
+#[test]
+fn stats_account_for_submitted_frames() {
+    let tmp = TempDir::new("render-stats");
+    let dir = tmp.path().join("rec");
+    make_session(&dir);
+    let (w, h) = (320, 240);
+    let cfg = Config {
+        hardware: false,
+        codec: crate::config::Codec::H264,
+        width: w,
+        height: h,
+        ..Config::default()
+    };
+    let mut job = RenderJob::open(&dir, &cfg).expect("open");
+    assert_eq!(job.stats(), crate::render_stats::RenderStats::default());
+    if tool("ffmpeg").is_none() {
+        return;
+    }
+    for _ in 0..30 {
+        job.submit_frame(w, h, vec![GRAY; (w * h) as usize], true)
+            .expect("submit");
+    }
+    let s = job.stats();
+    assert_eq!(s.frames, 30);
+    assert!(s.wall > Duration::ZERO && s.wall >= s.submit, "{s:?}");
+    assert!(s.submit >= s.queue_wait, "{s:?}");
+    assert!(s.pipe_write > Duration::ZERO, "{s:?}");
+    assert!(s.to_string().starts_with("30 frames in "), "{s}");
+    assert!(job.submit_frame(4, 4, vec![GRAY; 3], true).is_err());
+    assert_eq!(job.stats().frames, 30, "failed submits are not counted");
+    job.cancel();
 }
 
 #[test]

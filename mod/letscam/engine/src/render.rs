@@ -2,6 +2,7 @@
 //! hands the pixels back; the job composes the GUI picture-in-picture and feeds ffmpeg.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::director::{CameraPose, Director, Focus, WorldProbe};
@@ -10,6 +11,7 @@ use crate::encoder::{Encoder, probe_hardware};
 use crate::pip::{Image, compose, load_png};
 use crate::recording::GUI_DIR;
 use crate::render_options::{MAX_SPEED, MIN_SPEED, RenderOptions};
+use crate::render_stats::RenderStats;
 use crate::session::Session;
 use crate::sheet::make_sheets;
 
@@ -31,6 +33,9 @@ pub struct RenderJob {
     encoder: Option<Encoder>,
     size: (u32, u32, bool),
     gui_cache: Option<(String, Option<Image>)>,
+    /// Entry into the first successful `submit_frame` and exit from the latest one.
+    submit_span: Option<(Instant, Instant)>,
+    submit_time: Duration,
 }
 
 /// FNV-1a: a stable director seed from the recording name.
@@ -138,6 +143,8 @@ impl RenderJob {
             encoder: None,
             size: (0, 0, false),
             gui_cache: None,
+            submit_span: None,
+            submit_time: Duration::ZERO,
         })
     }
 
@@ -223,6 +230,34 @@ impl RenderJob {
         pixels: Vec<[u8; 4]>,
         bgra: bool,
     ) -> Result<(), String> {
+        let start = Instant::now();
+        self.submit_inner(width, height, pixels, bgra)?;
+        let end = Instant::now();
+        self.submit_time += end - start;
+        let first = self.submit_span.map_or(start, |(first, _)| first);
+        self.submit_span = Some((first, end));
+        Ok(())
+    }
+
+    /// Timings so far (cheap: a few reads, for an overlay or a log line).
+    pub fn stats(&self) -> RenderStats {
+        let enc = self.encoder.as_ref();
+        RenderStats {
+            frames: self.submitted,
+            wall: self.submit_span.map_or(Duration::ZERO, |(a, b)| b - a),
+            submit: self.submit_time,
+            queue_wait: enc.map_or(Duration::ZERO, Encoder::queue_wait),
+            pipe_write: enc.map_or(Duration::ZERO, Encoder::pipe_write),
+        }
+    }
+
+    fn submit_inner(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels: Vec<[u8; 4]>,
+        bgra: bool,
+    ) -> Result<(), String> {
         if self.submitted >= self.total_frames {
             return Err("все кадры уже отрендерены".into());
         }
@@ -272,6 +307,7 @@ impl RenderJob {
     /// Finishes the video, builds the contact sheet pages if the options ask for them, and
     /// without `keep_sources` deletes the WAVs and GUI snapshots.
     pub fn finish_with_sheets(mut self) -> Result<(PathBuf, Vec<PathBuf>), String> {
+        log::info!("LetsCam: {}", self.stats());
         let enc = self
             .encoder
             .take()

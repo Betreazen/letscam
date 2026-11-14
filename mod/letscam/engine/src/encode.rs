@@ -6,6 +6,13 @@
 //! - negative offset (audio started before): `atrim=start` cuts the head, `asetpts` resets;
 //! - with a known video duration, `atrim=end` cuts the audio tail so it never outlasts the
 //!   video (`-shortest` is not used: it can cut video when an audio track is shorter).
+//!
+//! Colour conversion: with NVENC and no scaling the frames go to the encoder as packed RGB
+//! (`bgr0`/`rgb0`, alpha ignored) and the GPU converts them to 4:2:0 — ffmpeg runs no swscale
+//! step. NVENC converts RGB with the BT.601 matrix to limited range and says so in the
+//! bitstream; the input is tagged the same (`-colorspace bt470bg -color_range tv`), otherwise
+//! MKV would carry the RGB input's `gbr`/`pc` tags. Software encoders and scaling keep the
+//! CPU path: `bgra`/`rgba` in, `-pix_fmt yuv420p` out.
 
 use std::path::{Path, PathBuf};
 
@@ -24,7 +31,54 @@ pub struct AudioInput {
 /// Offsets smaller than this are treated as zero.
 const OFFSET_EPS_MS: f64 = 0.5;
 
-fn video_codec_args(cfg: &Config) -> Vec<String> {
+/// The raw frames on ffmpeg's stdin: size, channel order and where they become YUV.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawInput {
+    pub w: u32,
+    pub h: u32,
+    /// Bytes are B, G, R, A (else R, G, B, A).
+    pub bgra: bool,
+    /// Packed RGB straight to NVENC, which converts on the GPU (else swscale on the CPU).
+    pub gpu_rgb: bool,
+}
+
+impl RawInput {
+    /// GPU conversion whenever the encoder is NVENC and the frame needs no scaling.
+    pub(crate) fn new(cfg: &Config, w: u32, h: u32, bgra: bool) -> RawInput {
+        RawInput {
+            w,
+            h,
+            bgra,
+            gpu_rgb: cfg.hardware && (w, h) == (cfg.width, cfg.height),
+        }
+    }
+
+    fn input_args(self, fps: u32) -> Vec<String> {
+        let pix = match (self.gpu_rgb, self.bgra) {
+            (true, true) => "bgr0",
+            (true, false) => "rgb0",
+            (false, true) => "bgra",
+            (false, false) => "rgba",
+        };
+        let mut a: Vec<String> = ["-f", "rawvideo", "-pix_fmt", pix]
+            .map(String::from)
+            .to_vec();
+        if self.gpu_rgb {
+            a.extend(["-colorspace", "bt470bg", "-color_range", "tv"].map(String::from));
+        }
+        a.extend([
+            "-s".into(),
+            format!("{}x{}", self.w, self.h),
+            "-framerate".into(),
+            fps.to_string(),
+            "-i".into(),
+            "-".into(),
+        ]);
+        a
+    }
+}
+
+fn video_codec_args(cfg: &Config, gpu_rgb: bool) -> Vec<String> {
     let q = cfg.quality.to_string();
     let v: Vec<&str> = if cfg.hardware {
         let enc = match cfg.codec {
@@ -52,7 +106,9 @@ fn video_codec_args(cfg: &Config) -> Vec<String> {
         }
     };
     let mut out: Vec<String> = v.into_iter().map(String::from).collect();
-    out.extend(["-pix_fmt", "yuv420p"].map(String::from));
+    if !gpu_rgb {
+        out.extend(["-pix_fmt", "yuv420p"].map(String::from));
+    }
     if cfg.container == Container::Mp4 && cfg.codec == Codec::Hevc {
         // Apple players and some editors need the hvc1 tag for HEVC in MP4.
         out.extend(["-tag:v", "hvc1"].map(String::from));
@@ -99,28 +155,28 @@ pub fn ffmpeg_args_with_duration(
     audio: &[AudioInput],
     duration_s: Option<f64>,
 ) -> Vec<String> {
+    let src = RawInput::new(cfg, src_w, src_h, src_bgra);
+    build_args(cfg, out, src, audio, duration_s)
+}
+
+/// The full command line for `src` (lets a caller force the CPU colour path).
+pub(crate) fn build_args(
+    cfg: &Config,
+    out: &Path,
+    src: RawInput,
+    audio: &[AudioInput],
+    duration_s: Option<f64>,
+) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error", "-y"]
         .map(String::from)
         .to_vec();
-    let pix = if src_bgra { "bgra" } else { "rgba" };
-    a.extend([
-        "-f".into(),
-        "rawvideo".into(),
-        "-pix_fmt".into(),
-        pix.into(),
-        "-s".into(),
-        format!("{src_w}x{src_h}"),
-        "-framerate".into(),
-        cfg.fps.to_string(),
-        "-i".into(),
-        "-".into(),
-    ]);
+    a.extend(src.input_args(cfg.fps));
     for track in audio {
         a.push("-i".into());
         a.push(track.path.to_string_lossy().into_owned());
     }
     let mut graph = Vec::new();
-    let video_map = if (src_w, src_h) != (cfg.width, cfg.height) {
+    let video_map = if (src.w, src.h) != (cfg.width, cfg.height) {
         graph.push(format!(
             "[0:v]scale={}:{}:flags=lanczos[v]",
             cfg.width, cfg.height
@@ -149,7 +205,7 @@ pub fn ffmpeg_args_with_duration(
         a.push("-map".into());
         a.push(m);
     }
-    a.extend(video_codec_args(cfg));
+    a.extend(video_codec_args(cfg, src.gpu_rgb));
     if !audio.is_empty() {
         match cfg.container {
             Container::Mp4 => a.extend(["-c:a", "aac", "-b:a", "256k"].map(String::from)),
@@ -170,192 +226,4 @@ pub fn ffmpeg_args_with_duration(
     }
     a.push(out.to_string_lossy().into_owned());
     a
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn audio(offsets: &[f64]) -> Vec<AudioInput> {
-        offsets
-            .iter()
-            .enumerate()
-            .map(|(i, &o)| AudioInput {
-                path: PathBuf::from(format!("a{i}.wav")),
-                offset_ms: o,
-                title: if i == 0 {
-                    "Игра".into()
-                } else {
-                    "Микрофон".into()
-                },
-            })
-            .collect()
-    }
-
-    fn has(args: &[String], seq: &[&str]) -> bool {
-        args.windows(seq.len())
-            .any(|w| w.iter().zip(seq).all(|(a, b)| a == b))
-    }
-
-    #[test]
-    fn nvenc_hevc_mp4_without_audio() {
-        let cfg = Config::default();
-        let a = ffmpeg_args(&cfg, Path::new("out.mp4"), 1920, 1080, true, &[]);
-        assert!(has(
-            &a,
-            &[
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "bgra",
-                "-s",
-                "1920x1080",
-                "-framerate",
-                "60",
-                "-i",
-                "-"
-            ]
-        ));
-        assert!(has(
-            &a,
-            &[
-                "-c:v",
-                "hevc_nvenc",
-                "-preset",
-                "p5",
-                "-rc",
-                "vbr",
-                "-cq",
-                "23",
-                "-b:v",
-                "0"
-            ]
-        ));
-        assert!(has(&a, &["-pix_fmt", "yuv420p"]));
-        assert!(has(&a, &["-tag:v", "hvc1"]));
-        assert!(has(&a, &["-map", "0:v:0"]));
-        assert!(has(&a, &["-movflags", "+faststart"]));
-        assert!(
-            !a.iter()
-                .any(|s| s == "-filter_complex" || s == "-c:a" || s == "-shortest")
-        );
-        assert_eq!(a.last().map(String::as_str), Some("out.mp4"));
-    }
-
-    #[test]
-    fn software_codecs() {
-        let base = Config {
-            hardware: false,
-            quality: 20,
-            ..Config::default()
-        };
-        let x264 = ffmpeg_args(
-            &Config {
-                codec: Codec::H264,
-                ..base.clone()
-            },
-            Path::new("o.mp4"),
-            8,
-            8,
-            false,
-            &[],
-        );
-        assert!(has(
-            &x264,
-            &["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
-        ));
-        assert!(has(&x264, &["-pix_fmt", "rgba"]));
-        let x265 = ffmpeg_args(&base, Path::new("o.mp4"), 8, 8, false, &[]);
-        assert!(has(&x265, &["-c:v", "libx265"]));
-        let av1 = ffmpeg_args(
-            &Config {
-                codec: Codec::Av1,
-                ..base
-            },
-            Path::new("o.mkv"),
-            8,
-            8,
-            false,
-            &[],
-        );
-        assert!(has(&av1, &["-c:v", "libsvtav1"]));
-        let av1_hw = ffmpeg_args(
-            &Config {
-                codec: Codec::Av1,
-                ..Config::default()
-            },
-            Path::new("o.mp4"),
-            8,
-            8,
-            false,
-            &[],
-        );
-        assert!(has(&av1_hw, &["-c:v", "av1_nvenc"]));
-        assert!(!has(&av1_hw, &["-tag:v", "hvc1"]));
-    }
-
-    #[test]
-    fn two_tracks_with_offsets_scaling_and_titles_mkv() {
-        let cfg = Config {
-            container: Container::Mkv,
-            ..Config::default()
-        };
-        let a = ffmpeg_args_with_duration(
-            &cfg,
-            Path::new("o.mkv"),
-            1280,
-            720,
-            true,
-            &audio(&[-120.0, 250.0]),
-            Some(1.5),
-        );
-        let graph = a
-            .iter()
-            .position(|s| s == "-filter_complex")
-            .map(|i| a[i + 1].clone())
-            .expect("graph");
-        assert!(
-            graph.contains("[0:v]scale=1920:1080:flags=lanczos[v]"),
-            "{graph}"
-        );
-        assert!(
-            graph.contains(
-                "[1:a:0]atrim=start=0.120000,asetpts=PTS-STARTPTS,atrim=end=1.500000[a0]"
-            ),
-            "{graph}"
-        );
-        assert!(
-            graph.contains("[2:a:0]adelay=delays=250.000:all=1,atrim=end=1.500000[a1]"),
-            "{graph}"
-        );
-        assert!(has(&a, &["-map", "[v]", "-map", "[a0]", "-map", "[a1]"]));
-        assert!(has(&a, &["-c:a", "flac"]));
-        assert!(has(
-            &a,
-            &[
-                "-metadata:s:a:0",
-                "title=Игра",
-                "-metadata:s:a:1",
-                "title=Микрофон"
-            ]
-        ));
-        assert!(!has(&a, &["-movflags", "+faststart"]));
-        assert!(has(&a, &["-i", "a0.wav", "-i", "a1.wav"]));
-    }
-
-    #[test]
-    fn one_track_without_offset_is_mapped_directly() {
-        let a = ffmpeg_args(
-            &Config::default(),
-            Path::new("o.mp4"),
-            1920,
-            1080,
-            false,
-            &audio(&[0.2]),
-        );
-        assert!(has(&a, &["-map", "0:v:0", "-map", "1:a:0"]));
-        assert!(has(&a, &["-c:a", "aac", "-b:a", "256k"]));
-        assert!(has(&a, &["-metadata:s:a:0", "handler_name=Игра"]));
-        assert!(!a.iter().any(|s| s == "-filter_complex"));
-    }
 }

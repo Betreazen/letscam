@@ -129,7 +129,7 @@ $checks = [ordered]@{
 foreach ($k in $angleChecks.Keys) { $checks[$k] = $angleChecks[$k] }
 $checks['window starts recording'] = [bool]$windowStarted
 # How fast each angle rendered (the encoder's own timing, one line per finished render).
-Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render stats[^"]*' |
+Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'LetsCam: d+ frames in[^"]*' |
     ForEach-Object { Write-Host $_.Matches[0].Value }
 # The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
 # the whole recording, or the second half of every video has no player.
