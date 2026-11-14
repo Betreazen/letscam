@@ -33,6 +33,7 @@ function Invoke-Console([string]$Line) {
 # Starts lc_a offscreen at the given window size and waits until it is in the world.
 function Start-LcBot([string]$Scratch, [int]$Width = 1920, [int]$Height = 1080) {
     New-Item -ItemType Directory -Force $Scratch | Out-Null
+    Set-BotSilent $Scratch
     $socket = Join-Path $Scratch 'lc_a.sock'
     $reply = & $Ctl --socket $socket launch --game (Get-JointClient) --offscreen --home $Instance `
         --game-dir $Instance --player-dir $Scratch --name lc_a --server 127.0.0.1:25570 `
@@ -41,6 +42,15 @@ function Start-LcBot([string]$Scratch, [int]$Width = 1920, [int]$Height = 1080) 
     $bot = [pscustomobject]@{ Name = 'lc_a'; Socket = $socket }
     Invoke-Bot $bot 'wait-ready 120' 130 | Out-Null
     $bot
+}
+
+# The owner's rule (bench README): bots make no sound on the PC's speakers. The client has no
+# flag for it, so the bot's options.txt gets master volume 0 before every launch (a client may
+# write 1.0 back on exit). LetsCam's game track is then silence, which the checks allow.
+function Set-BotSilent([string]$PlayerDir) {
+    $options = Join-Path $PlayerDir 'options.txt'
+    $lines = if (Test-Path $options) { @(Get-Content $options | Where-Object { $_ -notmatch '^soundCategory_master:' }) } else { @() }
+    Set-Content -Encoding utf8 $options ($lines + 'soundCategory_master:0.0')
 }
 
 function Stop-LcBot($Bot) {

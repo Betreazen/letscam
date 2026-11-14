@@ -604,6 +604,18 @@ impl engine::WorldProbe for Probe<'_, '_> {
 }
 
 fn apply_pose(game: &mut Game<'_>, pose: engine::CameraPose) {
+    // `fp`: the replay's own first-person view (the recorded eye, yaw and pitch, with the hand)
+    // is that angle exactly, and only with the free camera off is the own body kept out of it.
+    let first_person = STATE.with_borrow(|state| {
+        matches!(&state.mode, Mode::Rendering(render)
+            if render.job.options().preset == engine::ShotPreset::FirstPerson)
+    });
+    if first_person {
+        if game.studio_freecam.active {
+            game.studio_freecam.deactivate();
+        }
+        return;
+    }
     let position = glam::DVec3::from_array(pose.pos);
     let cam = &mut game.studio_freecam;
     if cam.active {
@@ -655,16 +667,24 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
 }
 
 fn tick_render(game: &mut Game<'_>) {
-    let day_time = STATE.with_borrow(|state| match &state.mode {
-        Mode::Rendering(render) => render.day_time,
-        _ => None,
+    let (day_time, first_person) = STATE.with_borrow(|state| match &state.mode {
+        Mode::Rendering(render) => (
+            render.day_time,
+            render.job.options().preset == engine::ShotPreset::FirstPerson,
+        ),
+        _ => (None, false),
     });
     apply_day_time(game, day_time);
     // The player's own body is drawn only while it is "in view": in a replay the camera type is
-    // first person, so that hangs on the free camera alone, and the body went missing for seconds
-    // (spec, known issues). Third person behind keeps it drawn whatever the free camera does; the
-    // replay's close puts the camera type back.
-    game.camera_type = super::perspective::CameraType::ThirdPersonBack;
+    // first person, so that hangs on the free camera alone. Third person behind keeps it drawn
+    // whatever the free camera does; the replay's close puts the camera type back. The `fp`
+    // angle is the opposite case: its camera sits in the head, so the body must stay hidden
+    // (first person, and the free camera off below).
+    game.camera_type = if first_person {
+        super::perspective::CameraType::FirstPerson
+    } else {
+        super::perspective::CameraType::ThirdPersonBack
+    };
     let in_view = (game.own_body_in_view(), game.studio_freecam.active);
     if LAST_BODY_IN_VIEW.get() != Some(in_view) {
         LAST_BODY_IN_VIEW.set(Some(in_view));
