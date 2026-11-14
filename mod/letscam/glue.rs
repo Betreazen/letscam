@@ -4,6 +4,8 @@
 // the studio free camera, every frame read back through a marked screenshot request.
 // Compiled as the child module `game::letscam_glue`, so it reads Game's private fields.
 use super::Game;
+use super::letscam_shot::{self as shot, FocusSpec};
+use super::letscam_world as world;
 use horizon_client::text::Text;
 use horizon_client_render::letscam::{self as bridge, engine};
 use std::cell::RefCell;
@@ -27,104 +29,6 @@ const WARMUP_FRAMES: u32 = 120;
 const MAX_MISSED: u32 = 60;
 const TAG_GUI: &str = "gui";
 const TAG_RENDER: &str = "render";
-/// The world's time of day when the recording began. A standalone replay builds its registries
-/// from the game's own data, so the recorded SetTime packets find no `minecraft:world_clock` and
-/// the sky stays at night: the render sets the time from this file instead.
-const WORLD_TIME_FILE: &str = "world_time.json";
-/// Game ticks per millisecond of replay (20 a second).
-const TICKS_PER_MS: f64 = 0.02;
-
-fn save_world_time(game: &Game<'_>, dir: &Path) {
-    let value = serde_json::json!({
-        "day_time": game.world.day_time,
-        "game_time": game.world.game_time,
-    });
-    if let Err(error) = std::fs::write(dir.join(WORLD_TIME_FILE), value.to_string()) {
-        log::warn!("letscam: {WORLD_TIME_FILE}: {error}");
-    }
-}
-
-fn load_day_time(dir: &Path) -> Option<i64> {
-    let text = std::fs::read_to_string(dir.join(WORLD_TIME_FILE)).ok()?;
-    serde_json::from_str::<serde_json::Value>(&text).ok()?["day_time"].as_i64()
-}
-
-/// The recorded time of day at the replay's current position.
-fn apply_day_time(game: &mut Game<'_>, start: Option<i64>) {
-    let (Some(start), Some(driver)) = (start, game.studio_replay.as_ref()) else {
-        return;
-    };
-    let ticks = (f64::from(driver.position_ms()) * TICKS_PER_MS) as i64;
-    game.world.day_time = start + ticks;
-}
-
-/// The live session's registry order that a standalone replay lacks: the configuration phase's
-/// RegistryData never reaches the .mcpr, so `init_remote_for_replay` leaves the chunk biome map
-/// empty and every biome decodes as built-in biome 0 (badlands: brown grass), and the world clock
-/// in SetTime finds no name. Saved when the recording starts, put back before the first packet.
-const REGISTRIES_FILE: &str = "registries.json";
-const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
-const CLOCK_REGISTRY: &str = "minecraft:world_clock";
-
-thread_local! {
-    /// Registries to put into the replay's remote before its first packet is dispatched.
-    static PENDING_REGISTRIES: RefCell<Option<(Vec<String>, Vec<String>)>> = const { RefCell::new(None) };
-}
-
-fn save_registries(game: &Game<'_>, dir: &Path) {
-    let Some(remote) = game.remote.as_ref() else { return };
-    let names = |key: &str| -> Vec<String> {
-        remote
-            .registries
-            .registries
-            .get(key)
-            .map(|list| list.iter().map(|(name, _)| name.clone()).collect())
-            .unwrap_or_default()
-    };
-    let value = serde_json::json!({ "biomes": names(BIOME_REGISTRY), "clocks": names(CLOCK_REGISTRY) });
-    if let Err(error) = std::fs::write(dir.join(REGISTRIES_FILE), value.to_string()) {
-        log::warn!("letscam: {REGISTRIES_FILE}: {error}");
-    }
-}
-
-fn load_registries(dir: &Path) -> Option<(Vec<String>, Vec<String>)> {
-    let text = std::fs::read_to_string(dir.join(REGISTRIES_FILE)).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let list = |key: &str| -> Vec<String> {
-        value[key]
-            .as_array()
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
-            .unwrap_or_default()
-    };
-    Some((list("biomes"), list("clocks")))
-}
-
-/// The recorded biome order as the replay's chunk biome map (what `set_registries` does on a
-/// live join) and both registries into `remote.registries`.
-fn inject_registries(game: &mut Game<'_>, biomes: Vec<String>, clocks: Vec<String>) {
-    if biomes.is_empty() {
-        return;
-    }
-    let ids: Vec<u16> = biomes.iter().map(|name| world_biomes!(game).id(name)).collect();
-    let Some(remote) = game.remote.as_mut() else { return };
-    let layout = remote.chunk_format.layout();
-    let bits = horizon_protocol::registry::ceil_log2(biomes.len());
-    remote.chunk_format = std::sync::Arc::new(
-        super::remote_chunks::ChunkFormat::new(&remote.dimension, ids, bits).in_column(layout),
-    );
-    let mut registries = (*remote.registries).clone();
-    let count = biomes.len();
-    registries
-        .registries
-        .insert(BIOME_REGISTRY.to_owned(), biomes.into_iter().map(|n| (n, None)).collect());
-    if !clocks.is_empty() {
-        registries
-            .registries
-            .insert(CLOCK_REGISTRY.to_owned(), clocks.into_iter().map(|n| (n, None)).collect());
-    }
-    remote.registries = std::sync::Arc::new(registries);
-    log::info!("letscam: replay registries restored ({count} biomes)");
-}
 
 struct Rec {
     recording: engine::Recording,
@@ -151,32 +55,9 @@ struct Render {
     /// What `focus=` asked for, and the entity it settled on.
     focus: Option<FocusSpec>,
     focus_id: Option<u32>,
-    /// The time of day the recording began with ([`WORLD_TIME_FILE`]), if it was saved.
+    /// The time of day the recording began with (`world_time.json`), if it was saved.
     day_time: Option<i64>,
 }
-
-/// `focus=` of `/letscam render`: an entity id, an entity type (`minecraft:pig`,
-/// `soulscraft:revenant`, or without the namespace), or `ride`: what the player sits on.
-#[derive(Clone, Debug)]
-enum FocusSpec {
-    Id(u32),
-    Kind(String),
-    Ride,
-}
-
-impl FocusSpec {
-    fn parse(word: &str) -> FocusSpec {
-        match word {
-            "ride" | "mount" | "vehicle" => FocusSpec::Ride,
-            _ => word
-                .parse()
-                .map_or_else(|_| FocusSpec::Kind(word.to_owned()), FocusSpec::Id),
-        }
-    }
-}
-
-/// Within this many blocks of the eye, the nearest creature is what the player rides.
-const RIDE_RADIUS: f64 = 3.0;
 
 #[derive(Default)]
 enum Mode {
@@ -288,8 +169,8 @@ pub fn start_recording(game: &mut Game<'_>) {
     for warning in recording.warnings() {
         say(game, warning.clone());
     }
-    save_world_time(game, &dir);
-    save_registries(game, &dir);
+    world::save_world_time(game, &dir);
+    world::save_registries(game, &dir);
     let swings_seen = game.swings_started;
     STATE.with_borrow_mut(|state| {
         state.mode = Mode::Recording(Box::new(Rec {
@@ -493,10 +374,6 @@ fn expand_angles(words: &[&str]) -> Vec<Vec<String>> {
 thread_local! {
     /// Renders still to make of the current recording, each as its option words.
     static QUEUE: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
-    /// The last half second of replay time the sync diagnostics logged.
-    static LAST_SYNC_LOG: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
-    /// The last (own body in view, free camera active) the render logged, to log only changes.
-    static LAST_BODY_IN_VIEW: std::cell::Cell<Option<(bool, bool)>> = const { std::cell::Cell::new(None) };
 }
 
 /// `/letscam render [папка] [ракурс[+ракурс…]] [x0.25] [sheet[=N]] [focus=...]`: the first word
@@ -593,7 +470,7 @@ fn open_replay(game: &mut Game<'_>) {
     let Some((job, dir, focus)) = taken else { return };
     let path = dir.join(REPLAY_FILE);
     // The recorded registries go in at the replay's first advance, before any packet is decoded.
-    PENDING_REGISTRIES.with_borrow_mut(|p| *p = load_registries(&dir));
+    world::queue_registries(&dir);
     let opened = game.open_studio_replay(&path.to_string_lossy());
     let ok = matches!(&opened, Ok(v) if v["ok"].as_bool() == Some(true));
     if !ok {
@@ -608,7 +485,7 @@ fn open_replay(game: &mut Game<'_>) {
     if let Some(driver) = game.studio_replay.as_mut() {
         driver.set_paused(true);
     }
-    let day_time = load_day_time(&dir);
+    let day_time = world::load_day_time(&dir);
     let hide_gui_before = game.ui.hide_gui;
     game.ui.hide_gui = true;
     STATE.with_borrow_mut(|state| {
@@ -628,87 +505,10 @@ fn open_replay(game: &mut Game<'_>) {
     });
 }
 
-/// The focus entity for this frame: the one already settled on while it lives, else the first
-/// match for `spec` (the nearest to the recorded player's eye), which it then sticks to.
-fn find_focus(game: &Game<'_>, spec: &FocusSpec, locked: &mut Option<u32>) -> Option<engine::Focus> {
-    let state = game.native_client_state()?;
-    let eye = state.eye_position?;
-    let entities = game.native_client_entities();
-    let alive = || entities.iter().filter(|e| e.alive && !e.spectator);
-    let distance = |p: [f64; 3]| {
-        let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
-        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-    };
-    let nearest = |pick: &dyn Fn(&super::native_client_services::NativeClientEntity) -> bool| {
-        alive()
-            .filter(|e| pick(e))
-            .min_by(|a, b| distance(a.position).total_cmp(&distance(b.position)))
-    };
-    let entity = match locked.and_then(|id| alive().find(|e| e.id == id)) {
-        Some(entity) => entity,
-        None => {
-            let found = match spec {
-                FocusSpec::Id(id) => alive().find(|e| e.id == *id),
-                FocusSpec::Kind(kind) => nearest(&|e| {
-                    e.kind == *kind || e.kind.rsplit(':').next() == Some(kind.as_str())
-                }),
-                FocusSpec::Ride => nearest(&|e| {
-                    e.player_uuid.is_none() && distance(e.position) <= RIDE_RADIUS
-                }),
-            }?;
-            *locked = Some(found.id);
-            found
-        }
-    };
-    let [x, y, z] = entity.position_at(state.world_partial_tick);
-    Some(engine::Focus {
-        pos: [x, y + f64::from(entity.height) / 2.0, z],
-        height: entity.height,
-        yaw: Some(entity.yaw),
-    })
-}
-
-struct Probe<'g, 'a>(&'g Game<'a>);
-
-impl engine::WorldProbe for Probe<'_, '_> {
-    fn clear(&self, from: [f64; 3], to: [f64; 3]) -> bool {
-        self.0.native_client_visual_clear(from, to)
-    }
-}
-
-fn apply_pose(game: &mut Game<'_>, pose: engine::CameraPose) {
-    // `fp`: the replay's own first-person view (the recorded eye, yaw and pitch, with the hand)
-    // is that angle exactly, and only with the free camera off is the own body kept out of it.
-    let first_person = STATE.with_borrow(|state| {
-        matches!(&state.mode, Mode::Rendering(render)
-            if render.job.options().preset == engine::ShotPreset::FirstPerson)
-    });
-    if first_person {
-        if game.studio_freecam.active {
-            game.studio_freecam.deactivate();
-        }
-        return;
-    }
-    let position = glam::DVec3::from_array(pose.pos);
-    let cam = &mut game.studio_freecam;
-    if cam.active {
-        cam.position = position;
-        cam.yaw = pose.yaw;
-        cam.pitch = pose.pitch;
-        cam.fov = pose.fov;
-        cam.velocity = glam::DVec3::ZERO;
-        cam.locked_to_path = false;
-    } else {
-        cam.activate(position, pose.yaw, pose.pitch, pose.fov);
-    }
-}
-
 /// HEAD of `advance_studio_replay`: while rendering, the replay moves one video frame after each
 /// captured frame and not at all otherwise, whatever the wall clock did.
 pub fn before_replay_advance(game: &mut Game<'_>) {
-    if let Some((biomes, clocks)) = PENDING_REGISTRIES.with_borrow_mut(Option::take) {
-        inject_registries(game, biomes, clocks);
-    }
+    world::restore_pending(game);
     let now = Instant::now();
     let step = STATE.with_borrow_mut(|state| {
         let Mode::Rendering(render) = &mut state.mode else {
@@ -750,7 +550,7 @@ fn tick_render(game: &mut Game<'_>) {
         ),
         _ => (None, false),
     });
-    apply_day_time(game, day_time);
+    world::apply_day_time(game, day_time);
     // The player's own body is drawn only while it is "in view": in a replay the camera type is
     // first person, so that hangs on the free camera alone. Third person behind keeps it drawn
     // whatever the free camera does; the replay's close puts the camera type back. The `fp`
@@ -769,64 +569,7 @@ fn tick_render(game: &mut Game<'_>) {
         player.velocity = Default::default();
         game.previous_position = player.position;
     }
-    let in_view = (game.own_body_in_view(), game.studio_freecam.active);
-    if LAST_BODY_IN_VIEW.get() != Some(in_view) {
-        LAST_BODY_IN_VIEW.set(Some(in_view));
-        let t = game.studio_replay.as_ref().map_or(0, |d| d.position_ms());
-        log::info!("letscam: body in view={} freecam={} at t_ms={t}", in_view.0, in_view.1);
-    }
-    // Sync diagnostics: where the replay shows the player, at which replay time (twice a second).
-    if let (Some(driver), Some(state)) = (game.studio_replay.as_ref(), game.native_client_state())
-        && let Some(eye) = state.eye_position
-    {
-        let t = driver.position_ms();
-        if t / 500 != LAST_SYNC_LOG.get() {
-            LAST_SYNC_LOG.set(t / 500);
-            let model = game.player_model.as_ref().map(|m| [m.position.x, m.position.y, m.position.z]);
-            let model_prev = game.player_model.as_ref().map(|m| [m.previous.x, m.previous.y, m.previous.z]);
-            let model_yaw = game.player_model.as_ref().map(|m| (m.yaw, m.body_yaw));
-            let game_yaw = game.yaw;
-            // The light the own model is drawn with (perspective.rs player_model_geometry): the
-            // cell at eye height, sky light in the high nibble. A door there is the suspect.
-            let light = game.player_model.as_ref().zip(game.player.as_ref()).map(|(m, p)| {
-                let eye = f64::from(p.dimensions.eye_height);
-                let probe = super::perspective::entity_light_block(m.position, m.extra.crouching, eye);
-                let feet = [
-                    m.position.x.floor() as i32,
-                    m.position.y.floor() as i32,
-                    m.position.z.floor() as i32,
-                ];
-                (
-                    probe,
-                    format!("{:#04x}", game.world.light(probe[0], probe[1], probe[2])),
-                    format!("{:#04x}", game.world.light(feet[0], feet[1], feet[2])),
-                )
-            });
-            // Every creature within 8 blocks of the replay player, of any type: a second figure of
-            // the player (drawn ~4 s ahead of the own model in the doorway scene) shows up here.
-            let near = |p: [f64; 3]| {
-                (p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2) < 64.0
-            };
-            let players: Vec<(u32, String, [f64; 3], f32, bool)> = game
-                .native_client_entities()
-                .iter()
-                .filter(|e| near(e.position))
-                .map(|e| (e.id, e.kind.clone(), e.position, e.yaw, e.player_uuid.is_some()))
-                .collect();
-            // Why the own model may not be drawn (perspective.rs player_model_shown / own_body_visible).
-            let shown = game.player_model_shown();
-            let body = game.own_body_visible();
-            let dead = game.player.as_ref().map(|p| p.health.dead_or_dying());
-            let freecam = game.studio_freecam.active;
-            let first = game.camera_type.first_person();
-            log::info!(
-                "letscam: sync t_ms={t} replay_eye={eye:?} model={model:?} players={players:?} \
-                 shown={shown} body={body} dead={dead:?} freecam={freecam} first_person={first} \
-                 model_prev={model_prev:?} model_yaw={model_yaw:?} game_yaw={game_yaw} \
-                 light(probe,eye,feet)={light:?}"
-            );
-        }
-    }
+    super::letscam_diag::log_frame(game);
     enum Next {
         Wait,
         Warm,
@@ -865,7 +608,7 @@ fn tick_render(game: &mut Game<'_>) {
                 _ => None,
             });
             if let Some(pose) = pose {
-                apply_pose(game, pose);
+                shot::apply_pose(game, pose, first_person);
             }
             if STATE.with_borrow(|s| matches!(&s.mode, Mode::Rendering(r) if r.warmup == 0))
                 && let Some(driver) = game.studio_replay.as_mut()
@@ -883,9 +626,9 @@ fn tick_render(game: &mut Game<'_>) {
             });
             let focus = spec
                 .as_ref()
-                .and_then(|spec| find_focus(game, spec, &mut locked));
+                .and_then(|spec| shot::find_focus(game, spec, &mut locked));
             let pose = {
-                let probe = Probe(game);
+                let probe = shot::Probe(game);
                 STATE.with_borrow_mut(|state| match &mut state.mode {
                     Mode::Rendering(render) => {
                         if render.focus_id.is_none() && locked.is_some() {
@@ -899,7 +642,7 @@ fn tick_render(game: &mut Game<'_>) {
             };
             match pose {
                 Some(pose) => {
-                    apply_pose(game, pose);
+                    shot::apply_pose(game, pose, first_person);
                     if request_capture(game, TAG_RENDER) {
                         STATE.with_borrow_mut(|state| {
                             if let Mode::Rendering(render) = &mut state.mode {

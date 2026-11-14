@@ -35,6 +35,26 @@ file = "crates/horizon-client/src/game.rs"
 name = "letscam_glue"
 source = "glue.rs"
 
+# Split out of the glue: time of day and registries for the replay, the render camera's focus and
+# pose, and the render's sync diagnostics (game::letscam_world, letscam_shot, letscam_diag).
+[[module]]
+id = "world"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_world"
+source = "world.rs"
+
+[[module]]
+id = "shot"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_shot"
+source = "shot.rs"
+
+[[module]]
+id = "diag"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_diag"
+source = "diag.rs"
+
 # A screenshot request whose path carries LetsCam's marker is handed to the mod, not saved as PNG.
 [[injection]]
 id = "write_screenshot"
