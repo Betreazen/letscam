@@ -13,6 +13,8 @@ use std::time::{Duration, Instant, SystemTime};
 pub const ID: &str = "letscam";
 const KEY_TOGGLE: &str = "toggle";
 const KEY_TOGGLE_DEFAULT: &str = "key.keyboard.f9";
+const KEY_MENU: &str = "menu";
+const KEY_MENU_DEFAULT: &str = "key.keyboard.f10";
 const KEY_CANCEL: &str = "key.keyboard.escape";
 const CONFIG_FILE: &str = "config/letscam-client.toml";
 const DEFAULT_OUTPUT: &str = "letscam";
@@ -196,13 +198,13 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
 
-fn say(game: &mut Game<'_>, line: impl Into<String>) {
+pub fn say(game: &mut Game<'_>, line: impl Into<String>) {
     let line = line.into();
     log::info!("letscam: {line}");
     game.system_message(Text::literal(format!("[LetsCam] {line}")));
 }
 
-fn config() -> engine::Config {
+pub fn config() -> engine::Config {
     STATE.with_borrow_mut(|state| {
         state
             .config
@@ -217,7 +219,7 @@ fn config() -> engine::Config {
     })
 }
 
-fn output_root(config: &engine::Config) -> PathBuf {
+pub fn output_root(config: &engine::Config) -> PathBuf {
     if config.output_dir.trim().is_empty() {
         PathBuf::from(DEFAULT_OUTPUT)
     } else {
@@ -233,17 +235,17 @@ fn stamp(now: SystemTime) -> String {
         .to_string()
 }
 
-fn is_recording() -> bool {
+pub fn is_recording() -> bool {
     STATE.with_borrow(|state| matches!(state.mode, Mode::Recording(_)))
 }
 
-fn is_rendering() -> bool {
+pub fn is_rendering() -> bool {
     STATE.with_borrow(|state| matches!(state.mode, Mode::Rendering(_) | Mode::Leaving(..)))
 }
 
 // ---- recording ---------------------------------------------------------------------------
 
-fn start_recording(game: &mut Game<'_>) {
+pub fn start_recording(game: &mut Game<'_>) {
     if !STATE.with_borrow(|s| matches!(s.mode, Mode::Idle)) {
         say(game, "Уже идёт запись или рендер.");
         return;
@@ -308,7 +310,7 @@ fn start_recording(game: &mut Game<'_>) {
     );
 }
 
-fn stop_recording(game: &mut Game<'_>) {
+pub fn stop_recording(game: &mut Game<'_>) {
     let rec = STATE.with_borrow_mut(|state| match std::mem::take(&mut state.mode) {
         Mode::Recording(rec) => Some(rec),
         other => {
@@ -437,7 +439,7 @@ fn request_capture(game: &mut Game<'_>, tag: &str) -> bool {
 
 // ---- rendering ---------------------------------------------------------------------------
 
-fn recordings(config: &engine::Config) -> Vec<PathBuf> {
+pub fn recordings(config: &engine::Config) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(output_root(config)) else {
         return Vec::new();
     };
@@ -499,7 +501,7 @@ thread_local! {
 
 /// `/letscam render [папка] [ракурс[+ракурс…]] [x0.25] [sheet[=N]] [focus=...]`: the first word
 /// is the recording's folder when such a folder exists, the rest are the crate's render options.
-fn start_render(game: &mut Game<'_>, words: &[&str]) {
+pub fn start_render(game: &mut Game<'_>, words: &[&str]) {
     if !STATE.with_borrow(|s| matches!(s.mode, Mode::Idle)) {
         say(game, "Сначала остановите запись или дождитесь конца рендера.");
         return;
@@ -967,6 +969,7 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
 // ---- hooks -------------------------------------------------------------------------------
 
 pub fn on_frame(game: &mut Game<'_>) {
+    run_screen_action(game);
     enum Phase {
         Idle,
         Recording,
@@ -1009,6 +1012,35 @@ pub fn on_key(game: &mut Game<'_>, key: &str, pressed: bool) {
         } else {
             start_recording(game);
         }
+    } else if key == game.native_mod_key(ID, KEY_MENU, KEY_MENU_DEFAULT) {
+        super::letscam_screen::open(game);
+    }
+}
+
+/// A click in the window, carried out here where the game is writable.
+fn run_screen_action(game: &mut Game<'_>) {
+    use super::letscam_screen::Action;
+    let Some(action) = super::letscam_screen::take_action() else { return };
+    match action {
+        Action::ToggleRecording => {
+            game.native_mod_screen_close(ID);
+            if is_recording() {
+                stop_recording(game);
+            } else {
+                start_recording(game);
+            }
+        }
+        Action::Render { folder, angles } => {
+            game.native_mod_screen_close(ID);
+            let mut words = vec![folder.as_str()];
+            words.extend(angles);
+            start_render(game, &words);
+        }
+        Action::OpenFolder(dir) => {
+            if let Err(error) = std::process::Command::new("explorer").arg(&dir).spawn() {
+                say(game, format!("Папка {} не открылась: {error}", dir.display()));
+            }
+        }
     }
 }
 
@@ -1019,6 +1051,7 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
     }
     *ran = true;
     match words.next() {
+        None | Some("menu") => super::letscam_screen::open(game),
         Some("start") => start_recording(game),
         Some("stop") => stop_recording(game),
         Some("list") => list(game),
@@ -1031,7 +1064,7 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
         }
         _ => say(
             game,
-            "/letscam start | stop | list | cancel | reload | render [папка] [auto|fp|shoulder|orbit|side|front|top|fixed:x,y,z] [x0.25] [sheet[=тиков]] [focus=id|тип|ride]",
+            "/letscam (окно, F10) | start | stop | list | cancel | reload | render [папка] [auto|fp|shoulder|orbit|side|front|top|fixed:x,y,z] [x0.25] [sheet[=тиков]] [focus=id|тип|ride]",
         ),
     }
 }
@@ -1062,13 +1095,16 @@ pub fn on_mods(mods: &mut Vec<crate::mod_api::NativeMod>) {
         title: "LetsCam".to_owned(),
         description: "Запись летсплеев: невидимая камера от третьего лица снимает игру по \
                       реплею, звук игры и микрофон — отдельными дорожками. Клавиша начинает и \
-                      останавливает запись; ролик: /letscam render."
+                      останавливает запись, вторая (F10) открывает окно записей с кнопками рендера."
             .to_owned(),
-        keys: vec![[
-            KEY_TOGGLE.to_owned(),
-            "Начать/остановить запись".to_owned(),
-            KEY_TOGGLE_DEFAULT.to_owned(),
-        ]],
+        keys: vec![
+            [
+                KEY_TOGGLE.to_owned(),
+                "Начать/остановить запись".to_owned(),
+                KEY_TOGGLE_DEFAULT.to_owned(),
+            ],
+            [KEY_MENU.to_owned(), "Окно записей".to_owned(), KEY_MENU_DEFAULT.to_owned()],
+        ],
     });
 }
 
@@ -1121,4 +1157,12 @@ fn watch_recorder(game: &mut Game<'_>, now: Instant) {
             ),
         );
     }
+}
+
+/// How long the running recording has gone, None when none runs (for the window).
+pub fn recording_elapsed() -> Option<Duration> {
+    STATE.with_borrow(|state| match &state.mode {
+        Mode::Recording(rec) => Some(Instant::now().saturating_duration_since(rec.started)),
+        _ => None,
+    })
 }
