@@ -676,7 +676,11 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
     let Render { job, dir, hide_gui_before, frames, .. } = *render;
     let carry_on = outcome.is_ok();
     let message = match outcome {
-        Ok(()) => match job.finish_with_sheets() {
+        Ok(()) => match {
+            // The engine's own log lines don't reach the game's log: its timing goes out from here.
+            log::info!("letscam: render stats: {}", job.stats());
+            job.finish_with_sheets()
+        } {
             Ok((path, sheets)) if sheets.is_empty() => {
                 format!("Ролик готов ({frames} кадров): {}", path.display())
             }
