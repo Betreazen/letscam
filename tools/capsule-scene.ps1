@@ -11,12 +11,13 @@ param(
     [string]$Scratch = (Join-Path $env:TEMP 'letscam-capsule'),
     # The route's console lines, as the RustCraft session wrote them (comments and blanks skipped).
     [string]$Route = 'C:\Users\ampro\AppData\Local\Temp\claude\f08e7281818005b6\c89ba97a-91fb-4981-8c32-2f4e00b8baab\scratchpad\s7\letscam-route.txt',
-    [int]$RenderTimeoutSec = 900
+    [int]$RenderTimeoutSec = 900,
+    # The render's angles, `+`-joined; `fp` is the rider's own view, where the cabin must hide.
+    [string]$Angles = 'auto+side+orbit+top'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
-
-$Angles = 'auto+side+orbit+top'
+$AngleCount = @($Angles -split '\+' | Where-Object { $_ }).Count
 # The station window's buttons in GUI pixels at 1280x720, GUI scale 3 (from the route's notes):
 # the first row of the list («Шахта») and «Ехать», which stays grey until a row is picked.
 $Row = '206 90'; $Go = '290 122'
@@ -59,7 +60,7 @@ try {
     Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30 | Write-Host
 
     Invoke-Bot $bot "chat /letscam render $Angles sheet focus=ride" | Out-Null
-    $done = Wait-Renders $bot 4 ($RenderTimeoutSec * 4)
+    $done = Wait-Renders $bot $AngleCount ($RenderTimeoutSec * $AngleCount)
     Write-Host $done
 } finally {
     Stop-LcBot $bot
