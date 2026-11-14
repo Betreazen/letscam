@@ -776,7 +776,10 @@ fn run_screen_action(game: &mut Game<'_>) {
         Action::Render { folder, angles } => {
             game.native_mod_screen_close(ID);
             let mut words = vec![folder.as_str()];
-            words.extend(angles);
+            // Several angles come with their contact sheets, to compare them at a glance.
+            if let Some(angles) = angles {
+                words.extend([angles, "sheet"]);
+            }
             start_render(game, &words);
         }
         Action::OpenFolder(dir) => {
