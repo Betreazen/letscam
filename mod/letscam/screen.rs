@@ -45,6 +45,8 @@ struct Entry {
 thread_local! {
     static ENTRIES: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
     static ACTION: RefCell<Option<Action>> = const { RefCell::new(None) };
+    /// The window logged where its buttons are since it opened (for the bench bot's `click-at`).
+    static LOGGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn entry(dir: PathBuf) -> Entry {
@@ -69,6 +71,7 @@ pub fn open(game: &mut Game<'_>) {
     dirs.reverse();
     let entries: Vec<Entry> = dirs.into_iter().take(MAX_ROWS).map(entry).collect();
     ENTRIES.with_borrow_mut(|list| *list = entries);
+    LOGGED.set(false);
     if !game.native_mod_screen_open(glue::ID) {
         glue::say(game, "Окно LetsCam открывается только в мире, без другого открытого окна.");
     }
@@ -132,6 +135,12 @@ pub fn draw(game: &Game<'_>, batch: &mut HudBatch, screen: &NativeScreenView<'_>
             let secs = elapsed.as_secs();
             let line = format!("● REC {}:{:02}", secs / 60, secs % 60);
             game.native_text(batch, &line, [x + WIDTH - 70.0, y + 7.0], 0xFF5555, true);
+        }
+        if !LOGGED.replace(true) {
+            let centre = |r: [f32; 4]| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+            let rects: Vec<(String, (f32, f32))> =
+                buttons(screen, entries).into_iter().map(|(r, _, label)| (label, centre(r))).collect();
+            log::info!("letscam: window open, buttons {rects:?}");
         }
         for (rect, action, label) in buttons(screen, entries) {
             let hover = inside(rect, screen.mouse);

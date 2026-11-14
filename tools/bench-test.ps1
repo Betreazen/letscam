@@ -53,7 +53,18 @@ try {
     Invoke-Console "kill @e[type=slime,x=$($x0-30),y=$($y0-5),z=$($z0-30),dx=60,dy=30,dz=60]" | Out-Null
     Start-Sleep -Seconds 2
 
-    Invoke-Bot $bot 'chat /letscam start' | Out-Null
+    # Started from the window (a bare `/letscam` opens it): its record button, clicked where the
+    # window logged it.
+    Invoke-Bot $bot 'chat /letscam' | Out-Null
+    $buttons = Wait-Message $bot @('letscam: window open, buttons [^\n]*', 'открывается только[^\n]*') 20
+    Write-Host $buttons
+    $script:windowStarted = $buttons -match '"Начать запись", \(([\d.]+), ([\d.]+)\)'
+    if ($windowStarted) {
+        Invoke-Bot $bot "click-at $([int][double]$Matches[1]) $([int][double]$Matches[2])" | Out-Null
+    } else {
+        Invoke-Bot $bot 'key esc tap' | Out-Null
+        Invoke-Bot $bot 'chat /letscam start' | Out-Null
+    }
     Wait-Message $bot @('Запись началась', 'не начал') 20 | Write-Host
     Start-Sleep -Seconds 3
     # Up to the door, through it, into the middle of the house: straight north along x of the door
@@ -116,6 +127,10 @@ $checks = [ordered]@{
     'length ≈ recording'   = ([math]::Abs($duration - $expected) -le 0.1)
 }
 foreach ($k in $angleChecks.Keys) { $checks[$k] = $angleChecks[$k] }
+$checks['window starts recording'] = [bool]$windowStarted
+# How fast each angle rendered (the encoder's own timing, one line per finished render).
+Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render stats[^"]*' |
+    ForEach-Object { Write-Host $_.Matches[0].Value }
 # The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
 # the whole recording, or the second half of every video has no player.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
