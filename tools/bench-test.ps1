@@ -91,15 +91,15 @@ $dir = Get-NewRecording $started
 $stem = "letscam_$($dir.Name)"
 $video = Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq $stem } | Select-Object -First 1
 if (-not $video) { throw "no $stem video in $($dir.FullName)" }
-$angles = [ordered]@{}
+$angleChecks = [ordered]@{}
 # Each angle's file suffix is its preset word (`fixed:x,y,z` → `_fixed`), none for `auto`.
 foreach ($angle in $AngleList) {
     $word = ($angle -split ':')[0]
     $suffix = if ($word -eq 'auto') { '' } else { "_$word" }
     if ($suffix) {
-        $angles["video $word"] = [bool](Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq "$stem$suffix" })
+        $angleChecks["video $word"] = [bool](Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq "$stem$suffix" })
     }
-    $angles["sheet$suffix"] = Test-Path (Join-Path $dir.FullName "$stem${suffix}_sheet_01.png")
+    $angleChecks["sheet$suffix"] = Test-Path (Join-Path $dir.FullName "$stem${suffix}_sheet_01.png")
 }
 $probe = & $Ffprobe -v error -show_entries 'stream=index,codec_type,codec_name,width,height,r_frame_rate:stream_tags=title,handler_name:format=duration' `
     -of json $video.FullName | ConvertFrom-Json
@@ -115,7 +115,7 @@ $checks = [ordered]@{
     'audio track «Игра»'   = [bool]($a | Where-Object { $_.tags.title -eq 'Игра' -or $_.tags.handler_name -eq 'Игра' })
     'length ≈ recording'   = ([math]::Abs($duration - $expected) -le 0.1)
 }
-foreach ($k in $angles.Keys) { $checks[$k] = $angles[$k] }
+foreach ($k in $angleChecks.Keys) { $checks[$k] = $angleChecks[$k] }
 # The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
 # the whole recording, or the second half of every video has no player.
 Add-Type -AssemblyName System.IO.Compression.FileSystem

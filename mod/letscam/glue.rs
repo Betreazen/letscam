@@ -682,11 +682,16 @@ fn tick_render(game: &mut Game<'_>) {
             let model_prev = game.player_model.as_ref().map(|m| [m.previous.x, m.previous.y, m.previous.z]);
             let model_yaw = game.player_model.as_ref().map(|m| (m.yaw, m.body_yaw));
             let game_yaw = game.yaw;
-            let players: Vec<(u32, [f64; 3])> = game
+            // Every creature within 8 blocks of the replay player, of any type: a second figure of
+            // the player (drawn ~4 s ahead of the own model in the doorway scene) shows up here.
+            let near = |p: [f64; 3]| {
+                (p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2) < 64.0
+            };
+            let players: Vec<(u32, String, [f64; 3], f32, bool)> = game
                 .native_client_entities()
                 .iter()
-                .filter(|e| e.player_uuid.is_some())
-                .map(|e| (e.id, e.position))
+                .filter(|e| near(e.position))
+                .map(|e| (e.id, e.kind.clone(), e.position, e.yaw, e.player_uuid.is_some()))
                 .collect();
             // Why the own model may not be drawn (perspective.rs player_model_shown / own_body_visible).
             let shown = game.player_model_shown();
