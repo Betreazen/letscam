@@ -586,6 +586,15 @@ fn tick_render(game: &mut Game<'_>) {
     // (`FramerateLimitTracker`, "short AFK") caps the game at 30 fps, and every angle past the
     // first minute rendered ~2.7x slower (13 ms → 35 ms a frame). A rendered frame counts as input.
     game.last_input = Instant::now();
+    // A player who switches to another window while a render runs: Horizon pauses the game 500 ms
+    // after the focus goes (`pause_if_inactive`, the pause menu would be filmed), and the pack's
+    // Dynamic FPS drops an unfocused window to 10 fps. The render keeps the game "focused";
+    // `finish_render` gives the window's real focus back.
+    game.focused = true;
+    game.focus_lost = None;
+    if game.screen == super::Screen::Paused {
+        game.screen = super::Screen::Playing;
+    }
     let (day_time, first_person) = STATE.with_borrow(|state| match &state.mode {
         Mode::Rendering(render) => (
             render.day_time,
@@ -747,6 +756,9 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
         }
     };
     game.ui.hide_gui = hide_gui_before;
+    // The window's real focus again (the render held it "focused", see `tick_render`).
+    game.focused = game.window.as_ref().is_none_or(|w| w.has_focus());
+    game.focus_lost = (!game.focused).then(Instant::now);
     game.close_studio_replay();
     say(game, message);
     // The next angle of the same recording, straight from the title the replay left us on.
