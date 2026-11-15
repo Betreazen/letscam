@@ -13,6 +13,8 @@ const GUARD: u8 = 2;
 const MS_PER_TICK: f64 = 50.0;
 /// Mobs named in one label at most.
 const MAX_MOBS: usize = 3;
+/// The debug label of a mob doing nothing.
+const IDLE: &str = "idle";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Note {
@@ -121,7 +123,10 @@ impl MobLabels {
 /// One mob's part: the debug label, else the clip with the ticks since it began.
 fn mob_text(seen: &Seen, t_ms: u32) -> Option<String> {
     let note = &seen.note;
-    let mut text = if !note.label.is_empty() {
+    // A mob standing idle is noise on the sheet (debug labels every mob, bog slimes included).
+    let mut text = if note.label == IDLE {
+        String::new()
+    } else if !note.label.is_empty() {
         note.label.clone()
     } else if note.clip.is_empty() {
         String::new()
@@ -200,6 +205,7 @@ mod tests {
         let notes = vec![
             note(3, "attack_slam", 10, 0, "slam:hit 2"),
             note(4, "", 0, 0, ""),
+            note(8, "", 0, 0, "idle"),
             note(5, "", 0, RAGE | GUARD, ""),
             note(6, "attack_lunge", 0, 0, ""),
         ];
