@@ -17,7 +17,9 @@ param(
     # The render command's angles, `+`-joined; `fixed:` shots look at the doorway from the south.
     [string]$Angles = 'auto+orbit+side+top',
     # Skip the key editor and the `keys` angle.
-    [switch]$NoKeys
+    [switch]$NoKeys,
+    # Skip the SoulsCraft revenant and the sheets' attack phase labels.
+    [switch]$NoMobs
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
@@ -48,6 +50,7 @@ $bot = Start-LcBot $Scratch 1920 1080
 $started = Get-Date
 try {
     Invoke-Console "gamemode creative lc_a" | Out-Null
+    if (-not $NoMobs) { Invoke-Console "op lc_a" | Out-Null }
     # Dropped from above, so it lands on whatever the ground is.
     Invoke-Console "tp lc_a $x0 -40 $($z0+12) 180 0" | Out-Null
     Start-Sleep -Seconds 6
@@ -86,9 +89,24 @@ try {
     Invoke-Bot $bot 'move forward 2.5' 30 | Write-Host
     Invoke-Bot $bot 'look -90 0' | Out-Null
     Invoke-Bot $bot 'move forward 1.5' 30 | Write-Host
+    if (-not $NoMobs) {
+        # A SoulsCraft revenant in front of the player swings two attacks; with `/sc debug on`
+        # its server sends a phase label every tick, which the sheets then carry.
+        Invoke-Bot $bot 'chat /sc debug on' | Out-Null
+        Invoke-Bot $bot 'chat /sc spawn revenant' | Out-Null
+        Start-Sleep -Seconds 2
+        foreach ($attack in 'overhead', 'slash') {
+            Invoke-Bot $bot "chat /sc force $attack" | Out-Null
+            Start-Sleep -Seconds 3
+        }
+    }
     Start-Sleep -Seconds 3
     Invoke-Bot $bot 'chat /letscam stop' | Out-Null
     Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30 | Write-Host
+    if (-not $NoMobs) {
+        Invoke-Bot $bot 'chat /sc clear' | Out-Null
+        Invoke-Bot $bot 'chat /sc debug off' | Out-Null
+    }
 
     $renderAngles = $Angles
     if (-not $NoKeys) {
@@ -125,6 +143,10 @@ try {
     Invoke-Bot $bot "screenshot $(Join-Path $Scratch 'after-render.png')" | Out-Null
 } finally {
     Stop-LcBot $bot
+    if (-not $NoMobs) {
+        Invoke-Console "sc debug off" | Out-Null
+        Invoke-Console "deop lc_a" | Out-Null
+    }
     Invoke-Console "fill $($x0-12) $y0 $($z0-12) $($x0+12) $($y0+8) $($z0+16) air" | Out-Null
     Invoke-Console "fill $($x0-12) $($y0-1) $($z0-12) $($x0+12) $($y0-1) $($z0+16) grass_block" | Out-Null
     Restore-TestConfig $configBackup
@@ -164,6 +186,12 @@ $checks['window starts recording'] = [bool]$windowStarted
 if (-not $NoKeys) {
     $checks['key editor saved 3 keys'] = [bool]($keysLine -match 'closed, 3 keyframes')
     $checks['render follows 3 keys'] = [bool](Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'keys path with 3 keyframes' -Quiet)
+}
+if (-not $NoMobs) {
+    $labels = Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: mob labels: [^"]*' |
+        Select-Object -First 1
+    if ($labels) { Write-Host $labels.Matches[0].Value }
+    $checks['sheets label attacks'] = [bool]($labels -and $labels.Matches[0].Value -match 'revenant')
 }
 # How fast each angle rendered (the encoder's own timing, one line per finished render).
 Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render stats: [^"]*' |

@@ -55,7 +55,38 @@ fn filter_path(p: &str) -> String {
         .replace('\'', "\\'")
 }
 
+/// A label's text as `drawtext reinit` takes it inside a `sendcmd` file: the characters those
+/// two parsers treat as syntax (and drawtext's `%` expansions) become spaces.
+fn label_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if "'\\:;,%{}[]=\n\r".contains(c) { ' ' } else { c })
+        .collect()
+}
+
+/// The `sendcmd` file for the labels: each `(video frame, text)` from that frame on.
+pub fn labels_cmd(labels: &[(u64, String)], fps: u32) -> String {
+    let fps = f64::from(fps.max(1));
+    labels
+        .iter()
+        .map(|(frame, text)| {
+            // Half a frame early, so the command is in before its frame arrives.
+            let t = ((*frame as f64 - 0.5) / fps).max(0.0);
+            format!("{t:.4} drawtext@lbl reinit 'text={}';\n", label_text(text))
+        })
+        .collect()
+}
+
+/// `<video stem>_labels.txt` next to the video: the labels' `sendcmd` file while sheets are made.
+pub fn labels_path(video: &Path) -> PathBuf {
+    let stem = video
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    video.with_file_name(format!("{stem}_labels.txt"))
+}
+
 /// ffmpeg arguments for one page; `ticks_per_video_s` turns video time into game ticks.
+/// `labels`: a `sendcmd` file (`labels_cmd`) whose lines go at the bottom of the stills.
 pub fn sheet_args(
     video: &Path,
     out_png: &Path,
@@ -63,21 +94,32 @@ pub fn sheet_args(
     page: Page,
     ticks_per_video_s: f64,
     font: Option<&str>,
+    labels: Option<&Path>,
 ) -> Vec<String> {
     let rows = page.stills.div_ceil(SHEET_COLS).max(1);
-    let mut chain = vec![
-        format!(
-            "select='not(mod(n\\,{step}))*between(n\\,{}\\,{})'",
-            page.first, page.last
-        ),
-        format!("scale={THUMB_WIDTH}:-2"),
-    ];
+    let labels = labels.filter(|_| font.is_some());
+    let mut chain = Vec::new();
+    if let Some(cmd) = labels {
+        chain.push(format!("sendcmd=f='{}'", filter_path(&cmd.to_string_lossy())));
+    }
+    chain.push(format!(
+        "select='not(mod(n\\,{step}))*between(n\\,{}\\,{})'",
+        page.first, page.last
+    ));
+    chain.push(format!("scale={THUMB_WIDTH}:-2"));
     if let Some(font) = font {
         chain.push(format!(
             "drawtext=fontfile='{}':text='tick %{{eif\\:floor(t*{ticks_per_video_s}+0.5)\\:d}}':\
              x=8:y=8:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=4",
             filter_path(font)
         ));
+        if labels.is_some() {
+            chain.push(format!(
+                "drawtext@lbl=fontfile='{}':text='':x=8:y=h-th-8:fontsize=20:\
+                 fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=4",
+                filter_path(font)
+            ));
+        }
     }
     chain.push(format!("tile={SHEET_COLS}x{rows}:padding=4:margin=4"));
     let mut a: Vec<String> = ["-hide_banner", "-v", "error", "-y", "-i"]
@@ -100,7 +142,8 @@ pub fn sheet_path(video: &Path, page: usize) -> PathBuf {
     video.with_file_name(format!("{stem}_sheet_{:02}.png", page + 1))
 }
 
-/// Builds all pages for a finished video; returns their paths.
+/// Builds all pages for a finished video; returns their paths. `labels`: `(video frame, text)`
+/// from that frame on, drawn at the bottom of the stills (the mobs' attack phases).
 pub fn make_sheets(
     ffmpeg: &str,
     video: &Path,
@@ -108,16 +151,26 @@ pub fn make_sheets(
     fps: u32,
     speed: f64,
     sheet_ticks: u32,
+    labels: &[(u64, String)],
 ) -> Result<Vec<PathBuf>, String> {
     let step = sheet_step(fps, speed, sheet_ticks);
     let font = Path::new(FONT).is_file().then_some(FONT);
     if font.is_none() {
         log::warn!("LetsCam: шрифт {FONT} не найден, лист кадров будет без подписей тиков");
     }
-    let mut out = Vec::new();
-    for (i, page) in pages(total_frames, step).into_iter().enumerate() {
+    let cmd = labels_path(video);
+    let with_labels = !labels.is_empty()
+        && match std::fs::write(&cmd, labels_cmd(labels, fps)) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("LetsCam: {}: {e}", cmd.display());
+                false
+            }
+        };
+    let labels_file = with_labels.then_some(cmd.as_path());
+    let page = |(i, page): (usize, Page)| {
         let png = sheet_path(video, i);
-        let args = sheet_args(video, &png, step, page, TICKS_PER_SECOND * speed, font);
+        let args = sheet_args(video, &png, step, page, TICKS_PER_SECOND * speed, font, labels_file);
         let res = command(ffmpeg)
             .args(&args)
             .stdin(std::process::Stdio::null())
@@ -130,9 +183,13 @@ pub fn make_sheets(
                 String::from_utf8_lossy(&res.stderr).trim()
             ));
         }
-        out.push(png);
+        Ok(png)
+    };
+    let out = pages(total_frames, step).into_iter().enumerate().map(page).collect();
+    if with_labels {
+        let _ = std::fs::remove_file(&cmd);
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -192,6 +249,7 @@ mod tests {
             page,
             5.0,
             Some(FONT),
+            None,
         );
         let vf = &a[a.iter().position(|s| s == "-vf").expect("vf") + 1];
         assert!(vf.starts_with("select='not(mod(n\\,12))*between(n\\,0\\,108)',scale=480:-2,"));
@@ -204,11 +262,31 @@ mod tests {
             "{vf}"
         );
         assert!(vf.ends_with("tile=6x2:padding=4:margin=4"));
-        let plain = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, None);
+        let plain = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, None, None);
         assert!(!plain.iter().any(|s| s.contains("drawtext")));
         assert_eq!(
             sheet_path(Path::new("d/letscam_a_x0.25.mp4"), 0),
             Path::new("d/letscam_a_x0.25_sheet_01.png")
         );
+    }
+
+    #[test]
+    fn labels_go_through_sendcmd() {
+        let page = Page { first: 0, last: 12, stills: 2 };
+        let cmd = Path::new("C:/r/v_labels.txt");
+        let a = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, Some(FONT), Some(cmd));
+        let vf = &a[a.iter().position(|s| s == "-vf").expect("vf") + 1];
+        assert!(vf.starts_with("sendcmd=f='C\\:/r/v_labels.txt',select="), "{vf}");
+        assert!(vf.contains("drawtext@lbl=fontfile="), "{vf}");
+        // Without a font there is nothing to draw the labels with.
+        let a = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, None, Some(cmd));
+        assert!(!a.iter().any(|s| s.contains("sendcmd")));
+        let file = labels_cmd(&[(0, "revenant overhead:hold 3".into()), (60, "a 'b', c;d%".into())], 60);
+        assert_eq!(
+            file,
+            "0.0000 drawtext@lbl reinit 'text=revenant overhead hold 3';\n\
+             0.9917 drawtext@lbl reinit 'text=a  b   c d ';\n"
+        );
+        assert_eq!(labels_path(Path::new("d/v_keys.mp4")), Path::new("d/v_keys_labels.txt"));
     }
 }

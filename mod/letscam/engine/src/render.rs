@@ -36,6 +36,8 @@ pub struct RenderJob {
     /// Entry into the first successful `submit_frame` and exit from the latest one.
     submit_span: Option<(Instant, Instant)>,
     submit_time: Duration,
+    /// Sheet labels: `(video frame, text)` from that frame on.
+    labels: Vec<(u64, String)>,
 }
 
 /// FNV-1a: a stable director seed from the recording name.
@@ -145,7 +147,25 @@ impl RenderJob {
             gui_cache: None,
             submit_span: None,
             submit_time: Duration::ZERO,
+            labels: Vec::new(),
         })
+    }
+
+    /// The sheet label for the next frame to be submitted and those after it, until it changes
+    /// (the mobs' attack phases; empty: none).
+    pub fn label_next(&mut self, text: &str) {
+        let frame = self.submitted;
+        match self.labels.last_mut() {
+            Some((f, t)) if *f == frame => *t = text.to_owned(),
+            Some((_, t)) if t == text => {}
+            None if text.is_empty() => {}
+            _ => self.labels.push((frame, text.to_owned())),
+        }
+    }
+
+    /// The labels set so far, `(video frame, text)`.
+    pub fn labels(&self) -> &[(u64, String)] {
+        &self.labels
     }
 
     pub fn fps(&self) -> u32 {
@@ -322,6 +342,7 @@ impl RenderJob {
                 self.cfg.fps,
                 self.opts.speed,
                 ticks,
+                &self.labels,
             )
             .map_err(|e| format!("ролик готов ({}), но {e}", out.display()))?,
             None => Vec::new(),

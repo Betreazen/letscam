@@ -131,6 +131,11 @@ fn slow_motion_render_with_contact_sheet() {
         RenderJob::open_with(&dir, &cfg, opts(&["orbit", "x0.25", "sheet=1"])).expect("open");
     let mut n = 0u32;
     while job.next_pose(&OpenWorld).is_some() {
+        match n {
+            0 => job.label_next("revenant overhead:hold 3"),
+            60 => job.label_next(""),
+            _ => {}
+        }
         let shade = (n * 2 % 255) as u8;
         job.submit_frame(W, H, vec![[shade, 80, 160, 255]; (W * H) as usize], true)
             .expect("submit");
@@ -147,6 +152,10 @@ fn slow_motion_render_with_contact_sheet() {
     // 120 frames, a still every 12 (one game tick at x0.25): 10 stills in a 6×2 grid of
     // 480×270 thumbnails with 4 px padding and margin.
     assert_eq!((img.width, img.height), (6 * 480 + 7 * 4, 2 * 270 + 3 * 4));
+    // The label is on the stills of frames 0..48 and gone from frame 60 on (the 6th still).
+    assert!(yellow_in(&img, 0), "label on the first still");
+    assert!(!yellow_in(&img, 5), "no label after it was cleared");
+    assert!(!dir.join("letscam_rec3_orbit_x0.25_labels.txt").exists());
     let Some(json) = ffprobe_json(&video) else {
         return;
     };
@@ -156,4 +165,16 @@ fn slow_motion_render_with_contact_sheet() {
         "slow motion has no audio"
     );
     assert_eq!(streams[0]["nb_read_frames"], "120");
+}
+
+/// Whether the bottom-left corner of still `col` in the sheet's first row has yellow label text.
+fn yellow_in(img: &crate::pip::Image, col: u32) -> bool {
+    let x0 = 4 + col * (480 + 4);
+    (4 + 230..4 + 266).any(|y| {
+        (x0 + 8..x0 + 240).any(|x| {
+            let i = ((y * img.width + x) * 4) as usize;
+            let p = &img.rgba[i..i + 3];
+            p[0] > 200 && p[1] > 200 && p[2] < 80
+        })
+    })
 }

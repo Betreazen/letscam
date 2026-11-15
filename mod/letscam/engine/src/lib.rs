@@ -17,6 +17,7 @@ pub mod loopback;
 #[cfg(windows)]
 mod loopback_win;
 pub mod mic;
+pub mod mob_labels;
 pub mod pip;
 pub mod recording;
 pub mod render;

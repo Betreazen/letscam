@@ -6,6 +6,7 @@
 use super::Game;
 use super::letscam_shot::{self as shot, FocusSpec};
 use super::letscam_edit as edit;
+use super::letscam_labels as labels;
 use super::letscam_world as world;
 use horizon_client::text::Text;
 use horizon_client_render::letscam::{self as bridge, engine};
@@ -61,6 +62,8 @@ struct Render {
     keys: horizon_client::studio::CameraTrack,
     /// The time of day the recording began with (`world_time.json`), if it was saved.
     day_time: Option<i64>,
+    /// The SoulsCraft mobs' attacks, from the replay's messages, for the sheets' labels.
+    mobs: engine::mob_labels::MobLabels,
 }
 
 #[derive(Default)]
@@ -516,6 +519,7 @@ fn open_replay(game: &mut Game<'_>) {
             focus_id: None,
             keys,
             day_time,
+            mobs: Default::default(),
         }));
     });
 }
@@ -639,6 +643,10 @@ fn tick_render(game: &mut Game<'_>) {
             let focus = spec
                 .as_ref()
                 .and_then(|spec| shot::find_focus(game, spec, &mut locked));
+            let label = STATE.with_borrow(|state| match &state.mode {
+                Mode::Rendering(render) => labels::line(game, &render.mobs, game_ms),
+                _ => String::new(),
+            });
             let pose = {
                 let probe = shot::Probe(game);
                 STATE.with_borrow_mut(|state| match &mut state.mode {
@@ -647,6 +655,7 @@ fn tick_render(game: &mut Game<'_>) {
                             log::info!("letscam: focus on entity {locked:?}");
                         }
                         render.focus_id = locked;
+                        render.job.label_next(&label);
                         render.job.next_pose_focus(&probe, focus).map(|p| keyed_pose(render, game_ms, p))
                     }
                     _ => None,
@@ -691,6 +700,9 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
         Ok(()) => match {
             // The engine's own log lines don't reach the game's log: its timing goes out from here.
             log::info!("letscam: render stats: {}", job.stats());
+            if let Some((_, first)) = job.labels().iter().find(|(_, text)| !text.is_empty()) {
+                log::info!("letscam: mob labels: {} changes, first «{first}»", job.labels().len());
+            }
             job.finish_with_sheets()
         } {
             Ok((path, sheets)) if sheets.is_empty() => {
@@ -896,6 +908,16 @@ pub fn record_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
         },
     );
     remote.session.record_clientbound(&packet);
+}
+
+/// A mod payload the replay being rendered just played: SoulsCraft's mob state for the labels.
+pub fn replay_payload(game: &Game<'_>, data: &[u8]) {
+    let at_ms = replay_ms(game);
+    STATE.with_borrow_mut(|state| {
+        if let Mode::Rendering(render) = &mut state.mode {
+            labels::take_payload(data, at_ms, &mut render.mobs);
+        }
+    });
 }
 
 /// The studio recorder stops on its own when its queue overflows or its file write fails, and

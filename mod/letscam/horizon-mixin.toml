@@ -55,6 +55,13 @@ file = "crates/horizon-client/src/game.rs"
 name = "letscam_diag"
 source = "diag.rs"
 
+# The contact sheets' line of the mobs' attack phases (game::letscam_labels).
+[[module]]
+id = "labels"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_labels"
+source = "labels.rs"
+
 # The key editor: the replay opened for keying the studio camera path (game::letscam_edit).
 [[module]]
 id = "edit"

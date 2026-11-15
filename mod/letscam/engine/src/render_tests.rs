@@ -211,3 +211,27 @@ fn recording_and_render_job_are_send() {
     assert_send::<crate::recording::Recording>();
     assert_send::<RenderJob>();
 }
+
+#[test]
+fn labels_hold_from_the_frame_they_were_set_on() {
+    let tmp = TempDir::new("render-labels");
+    let dir = tmp.path().join("rec");
+    make_session(&dir);
+    let cfg = Config {
+        hardware: false,
+        ..Config::default()
+    };
+    let mut job = RenderJob::open(&dir, &cfg).expect("open");
+    job.label_next("");
+    assert!(job.labels().is_empty());
+    job.label_next("revenant overhead +1");
+    job.label_next("revenant overhead +2");
+    assert_eq!(job.labels(), &[(0, "revenant overhead +2".to_owned())]);
+    if tool("ffmpeg").is_some() {
+        job.submit_frame(64, 64, vec![GRAY; 64 * 64], false).expect("frame");
+        job.label_next("revenant overhead +2");
+        job.label_next("");
+        assert_eq!(job.labels(), &[(0, "revenant overhead +2".to_owned()), (1, String::new())]);
+    }
+    job.cancel();
+}
