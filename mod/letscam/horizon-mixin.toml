@@ -8,7 +8,7 @@
 # helpers are thin glue, because a crate edit rebuilds in ~11 s and a helper edit in ~48 s.
 [mod]
 id = "letscam"
-version = "0.1.1"
+version = "0.1.2"
 
 [compatibility]
 horizon_revision = "7e4e421224743469035ba0c34fc21e569e64a17d"

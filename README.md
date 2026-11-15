@@ -185,7 +185,7 @@ horizon-launcher native-build --trust-native-code
 
 ## Разработка
 
-Устройство мода, тесты и проверки ботом — [docs/development.md](docs/development.md). Спецификация и журнал проверок — [docs/design/01-spec.md](docs/design/01-spec.md). История версий — [CHANGELOG.md](CHANGELOG.md).
+Устройство мода, тесты и проверки ботом — [docs/development.md](docs/development.md). 3D-сцена для сайта проекта строится кодом в Blender: [site/scene/build_scene.py](site/scene/build_scene.py). Спецификация и журнал проверок — [docs/design/01-spec.md](docs/design/01-spec.md). История версий — [CHANGELOG.md](CHANGELOG.md).
 
 ## In English
 
