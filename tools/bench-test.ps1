@@ -206,7 +206,7 @@ Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'l
 # replay position at every posed frame stays within a tick of frame × step.
 $drifts = @(Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'replay drift -?\d+ ms \(max (-?\d+)\)' |
     ForEach-Object { [math]::Abs([int]$_.Matches[0].Groups[1].Value) })
-$checks['replay keeps time'] = $drifts.Count -ge $AngleList.Count -and ($drifts | Measure-Object -Maximum).Maximum -le 60
+$driftOk = $drifts.Count -ge $AngleList.Count -and ($drifts | Measure-Object -Maximum).Maximum -le 60
 # The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
 # the whole recording, or the second half of every video has no player.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -221,6 +221,9 @@ $logs = @([IO.Path]::ChangeExtension($bot.Socket, 'log')) + @($recordLog | Where
 $stopped = Select-String -Path $logs -Pattern 'Реплей перестал записываться[^"]*' |
     Select-Object -First 1
 if ($stopped) { Write-Host "recorder: $($stopped.Matches[0].Value)" }
+# A replay cut short by the recorder ends early, and the video holds its last frame: the drift is
+# then the missing tail, not a timing fault, and "replay covers the action" already fails.
+if ($stopped) { Write-Host "replay keeps time: not judged, the recorder stopped" } else { $checks['replay keeps time'] = $driftOk }
 # A replay ends at its last packet, so a quiet tail (the player standing still in a flat world)
 # is no loss: it must reach the last time the player moved or turned, not the recording's end.
 $lastMove = 0
