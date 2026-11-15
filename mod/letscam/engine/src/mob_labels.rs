@@ -70,7 +70,13 @@ pub fn decode(data: &[u8]) -> Option<Batch> {
         let flags = r.u8()?;
         let _size = r.u8()?;
         let label = r.str()?;
-        notes.push(Note { id, clip, start, flags, label });
+        notes.push(Note {
+            id,
+            clip,
+            start,
+            flags,
+            label,
+        });
     }
     r.0.is_empty().then_some(Batch { now, notes })
 }
@@ -93,7 +99,11 @@ impl MobLabels {
     /// Takes a message the replay just played at `at_ms`.
     pub fn apply(&mut self, batch: Batch, at_ms: u32) {
         for note in batch.notes {
-            let seen = Seen { note, server_now: batch.now, at_ms };
+            let seen = Seen {
+                note,
+                server_now: batch.now,
+                at_ms,
+            };
             self.mobs.insert(seen.note.id, seen);
         }
     }
@@ -173,14 +183,23 @@ mod tests {
     }
 
     fn note(id: u32, clip: &str, start: i64, flags: u8, label: &str) -> Note {
-        Note { id, clip: clip.into(), start, flags, label: label.into() }
+        Note {
+            id,
+            clip: clip.into(),
+            start,
+            flags,
+            label: label.into(),
+        }
     }
 
     #[test]
     fn decodes_what_soulscraft_sends() {
         let b = Batch {
             now: 1000,
-            notes: vec![note(7, "attack_overhead", 990, GUARD, "overhead:hold 6"), note(9, "", 1, RAGE, "")],
+            notes: vec![
+                note(7, "attack_overhead", 990, GUARD, "overhead:hold 6"),
+                note(9, "", 1, RAGE, ""),
+            ],
         };
         let bytes = encode(&b);
         assert_eq!(decode(&bytes), Some(b));
@@ -193,7 +212,13 @@ mod tests {
     #[test]
     fn counts_the_clip_ticks_from_its_start() {
         let mut labels = MobLabels::default();
-        labels.apply(Batch { now: 1000, notes: vec![note(7, "attack_overhead", 995, 0, "")] }, 2000);
+        labels.apply(
+            Batch {
+                now: 1000,
+                notes: vec![note(7, "attack_overhead", 995, 0, "")],
+            },
+            2000,
+        );
         let name = |id| (id == 7).then(|| "revenant".to_owned());
         assert_eq!(labels.line(2000, name), "revenant overhead +5");
         assert_eq!(labels.line(2149, name), "revenant overhead +7");

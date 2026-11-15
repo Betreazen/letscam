@@ -228,10 +228,14 @@ fn labels_hold_from_the_frame_they_were_set_on() {
     job.label_next("revenant overhead +2");
     assert_eq!(job.labels(), &[(0, "revenant overhead +2".to_owned())]);
     if tool("ffmpeg").is_some() {
-        job.submit_frame(64, 64, vec![GRAY; 64 * 64], false).expect("frame");
+        job.submit_frame(64, 64, vec![GRAY; 64 * 64], false)
+            .expect("frame");
         job.label_next("revenant overhead +2");
         job.label_next("");
-        assert_eq!(job.labels(), &[(0, "revenant overhead +2".to_owned()), (1, String::new())]);
+        assert_eq!(
+            job.labels(),
+            &[(0, "revenant overhead +2".to_owned()), (1, String::new())]
+        );
     }
     job.cancel();
 }

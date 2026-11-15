@@ -121,7 +121,11 @@ mod tests {
             s.to_string(),
             "2000 game frames for 1000 video frames (2.00 each, 990 retries); game frame 20.0 ms; focus 0.50 ms/frame; pose 1.50 ms/frame"
         );
-        assert!(LoopStats::default().to_string().starts_with("0 game frames for 0 video frames (0.00 each"));
+        assert!(
+            LoopStats::default()
+                .to_string()
+                .starts_with("0 game frames for 0 video frames (0.00 each")
+        );
     }
 
     #[test]

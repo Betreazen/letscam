@@ -59,7 +59,13 @@ fn filter_path(p: &str) -> String {
 /// two parsers treat as syntax (and drawtext's `%` expansions) become spaces.
 fn label_text(text: &str) -> String {
     text.chars()
-        .map(|c| if "'\\:;,%{}[]=\n\r".contains(c) { ' ' } else { c })
+        .map(|c| {
+            if "'\\:;,%{}[]=\n\r".contains(c) {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -100,7 +106,10 @@ pub fn sheet_args(
     let labels = labels.filter(|_| font.is_some());
     let mut chain = Vec::new();
     if let Some(cmd) = labels {
-        chain.push(format!("sendcmd=f='{}'", filter_path(&cmd.to_string_lossy())));
+        chain.push(format!(
+            "sendcmd=f='{}'",
+            filter_path(&cmd.to_string_lossy())
+        ));
     }
     chain.push(format!(
         "select='not(mod(n\\,{step}))*between(n\\,{}\\,{})'",
@@ -170,7 +179,15 @@ pub fn make_sheets(
     let labels_file = with_labels.then_some(cmd.as_path());
     let page = |(i, page): (usize, Page)| {
         let png = sheet_path(video, i);
-        let args = sheet_args(video, &png, step, page, TICKS_PER_SECOND * speed, font, labels_file);
+        let args = sheet_args(
+            video,
+            &png,
+            step,
+            page,
+            TICKS_PER_SECOND * speed,
+            font,
+            labels_file,
+        );
         let res = command(ffmpeg)
             .args(&args)
             .stdin(std::process::Stdio::null())
@@ -185,7 +202,11 @@ pub fn make_sheets(
         }
         Ok(png)
     };
-    let out = pages(total_frames, step).into_iter().enumerate().map(page).collect();
+    let out = pages(total_frames, step)
+        .into_iter()
+        .enumerate()
+        .map(page)
+        .collect();
     if with_labels {
         let _ = std::fs::remove_file(&cmd);
     }
@@ -262,7 +283,15 @@ mod tests {
             "{vf}"
         );
         assert!(vf.ends_with("tile=6x2:padding=4:margin=4"));
-        let plain = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, None, None);
+        let plain = sheet_args(
+            Path::new("v.mp4"),
+            Path::new("s.png"),
+            12,
+            page,
+            5.0,
+            None,
+            None,
+        );
         assert!(!plain.iter().any(|s| s.contains("drawtext")));
         assert_eq!(
             sheet_path(Path::new("d/letscam_a_x0.25.mp4"), 0),
@@ -272,21 +301,53 @@ mod tests {
 
     #[test]
     fn labels_go_through_sendcmd() {
-        let page = Page { first: 0, last: 12, stills: 2 };
+        let page = Page {
+            first: 0,
+            last: 12,
+            stills: 2,
+        };
         let cmd = Path::new("C:/r/v_labels.txt");
-        let a = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, Some(FONT), Some(cmd));
+        let a = sheet_args(
+            Path::new("v.mp4"),
+            Path::new("s.png"),
+            12,
+            page,
+            5.0,
+            Some(FONT),
+            Some(cmd),
+        );
         let vf = &a[a.iter().position(|s| s == "-vf").expect("vf") + 1];
-        assert!(vf.starts_with("sendcmd=f='C\\:/r/v_labels.txt',select="), "{vf}");
+        assert!(
+            vf.starts_with("sendcmd=f='C\\:/r/v_labels.txt',select="),
+            "{vf}"
+        );
         assert!(vf.contains("drawtext@lbl=fontfile="), "{vf}");
         // Without a font there is nothing to draw the labels with.
-        let a = sheet_args(Path::new("v.mp4"), Path::new("s.png"), 12, page, 5.0, None, Some(cmd));
+        let a = sheet_args(
+            Path::new("v.mp4"),
+            Path::new("s.png"),
+            12,
+            page,
+            5.0,
+            None,
+            Some(cmd),
+        );
         assert!(!a.iter().any(|s| s.contains("sendcmd")));
-        let file = labels_cmd(&[(0, "revenant overhead:hold 3".into()), (60, "a 'b', c;d%".into())], 60);
+        let file = labels_cmd(
+            &[
+                (0, "revenant overhead:hold 3".into()),
+                (60, "a 'b', c;d%".into()),
+            ],
+            60,
+        );
         assert_eq!(
             file,
             "0.0000 drawtext@lbl reinit 'text=revenant overhead hold 3';\n\
              0.9917 drawtext@lbl reinit 'text=a  b   c d ';\n"
         );
-        assert_eq!(labels_path(Path::new("d/v_keys.mp4")), Path::new("d/v_keys_labels.txt"));
+        assert_eq!(
+            labels_path(Path::new("d/v_keys.mp4")),
+            Path::new("d/v_keys_labels.txt")
+        );
     }
 }
