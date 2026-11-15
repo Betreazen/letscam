@@ -1,0 +1,40 @@
+# A short slice-6 monorail route for LetsCam, in x 96..178, z 96..124 (RustCraft's part of the
+# joint bench). Run each line with
+#   horizon-server --dir %LOCALAPPDATA%\Horizon\joint-dev\server cmd <line>
+# on a running joint server with RustCraft 0.6+ (the commands are the server console's, no slash).
+#
+# The route: a stone deck at y 149, floor rails of tier 4 at y 150 from x 98 to x 172 along z 110,
+# a climb of one block at x 130 (up) and back at x 140 (down). The trip is about 77 blocks at 32
+# blocks a second (about 2.5 s plus
+# 4-tick easing at each end). Station «Дом» at x 97, station «Шахта» at x 173, both full (2000 E).
+
+fill 96 149 106 178 149 114 minecraft:stone
+fill 96 150 106 178 153 114 minecraft:air
+fill 98 150 110 129 150 110 rustcraft:monorail[mount=down,tier=4]
+fill 130 150 110 139 150 110 minecraft:stone
+fill 130 151 110 139 151 110 rustcraft:monorail[mount=down,tier=4]
+fill 140 150 110 172 150 110 rustcraft:monorail[mount=down,tier=4]
+setblock 97 150 110 rustcraft:station[facing=east]
+setblock 173 150 110 rustcraft:station[facing=west]
+data merge block 97 150 110 {name:"Дом",energy:2000.0d}
+data merge block 173 150 110 {name:"Шахта",energy:2000.0d}
+
+# The server reads new rails and stations within a second (its rescan) and sets each rail's shape
+# from its neighbours; the climb rails at x 130..139 sit one block up on the stone at y 150, so the
+# trip goes up at x 129 -> 130 and down at x 139 -> 140. If the climb does not join (shape `s5`
+# instead of `c0` at x 129 / x 140 in `data get block`), drop the three climb lines and lay the
+# whole run flat: fill 98 150 110 172 150 110 rustcraft:monorail[mount=down,tier=4].
+#
+# The rider: stand at 99 150 108 (on the deck beside the first rail), look at the station block
+# 97 150 110 and right-click it (`horizon-ctl interact 97 150 110 east`): the station window opens.
+#
+# The window is 214 x 240 GUI pixels, centred on the screen (rustcraft_rules::monorail::window).
+# With the GUI W x H (horizon-ctl `screen` gives it; 1280 x 720 at GUI scale 3 is 426.7 x 240):
+#   left = (W - 214) / 2, top = (H - 240) / 2
+#   first row of the station list («Шахта · 75 бл · 2,6 с»): click-at left+100 top+90
+#   «Ехать»:                                                click-at left+184 top+122
+# At 1280 x 720, scale 3: row (206, 90), «Ехать» (290, 122). The ride starts on the next tick;
+# Shift leaves the capsule. Without a choice «Ехать» is grey: pick the row first.
+#
+# To take it all away again:
+#   fill 96 149 106 178 153 114 minecraft:air

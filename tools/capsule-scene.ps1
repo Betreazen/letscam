@@ -9,8 +9,9 @@
 #   .\joint.ps1 open; .\joint.ps1 serve -Owner "letscam agent"   (and .\joint.ps1 close after)
 param(
     [string]$Scratch = (Join-Path $env:TEMP 'letscam-capsule'),
-    # The route's console lines, as the RustCraft session wrote them (comments and blanks skipped).
-    [string]$Route = 'C:\Users\ampro\AppData\Local\Temp\claude\f08e7281818005b6\c89ba97a-91fb-4981-8c32-2f4e00b8baab\scratchpad\s7\letscam-route.txt',
+    # The route's console lines, as the RustCraft session wrote them (comments and blanks skipped);
+    # kept next to this script.
+    [string]$Route = (Join-Path $PSScriptRoot 'capsule-route.txt'),
     [int]$RenderTimeoutSec = 900,
     # The render's angles, `+`-joined; `fp` is the rider's own view, where the cabin must hide.
     [string]$Angles = 'auto+side+orbit+top'
