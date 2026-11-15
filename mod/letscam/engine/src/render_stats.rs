@@ -56,9 +56,73 @@ impl fmt::Display for RenderStats {
     }
 }
 
+/// The game's side of a render, measured by the glue: how many game frames each video frame
+/// took and where the glue's own time per frame went.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoopStats {
+    /// Video frames captured.
+    pub frames: u64,
+    /// Game frames after the warm-up (each one asks for a pose or waits for a capture).
+    pub ticks: u64,
+    /// Game frames that found the previous capture not back yet and asked again.
+    pub retries: u64,
+    /// From the first game frame after the warm-up to the latest one.
+    pub wall: Duration,
+    /// Finding the `focus=` entity.
+    pub focus: Duration,
+    /// The camera pose with its obstacle rays, and the sheet label.
+    pub pose: Duration,
+}
+
+/// `total` over `n` in milliseconds (0 for none).
+fn ms_per(total: Duration, n: u64) -> f64 {
+    if n == 0 {
+        0.0
+    } else {
+        total.as_secs_f64() * 1000.0 / n as f64
+    }
+}
+
+impl fmt::Display for LoopStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let each = if self.frames == 0 {
+            0.0
+        } else {
+            self.ticks as f64 / self.frames as f64
+        };
+        write!(
+            f,
+            "{} game frames for {} video frames ({each:.2} each, {} retries); game frame {:.1} ms; focus {:.2} ms/frame; pose {:.2} ms/frame",
+            self.ticks,
+            self.frames,
+            self.retries,
+            ms_per(self.wall, self.ticks),
+            ms_per(self.focus, self.frames),
+            ms_per(self.pose, self.frames),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loop_line_shows_game_frames_per_video_frame() {
+        let s = LoopStats {
+            frames: 1000,
+            ticks: 2000,
+            retries: 990,
+            wall: Duration::from_secs(40),
+            focus: Duration::from_millis(500),
+            pose: Duration::from_millis(1500),
+        };
+        assert_eq!(
+            s.to_string(),
+            "2000 game frames for 1000 video frames (2.00 each, 990 retries); game frame 20.0 ms; focus 0.50 ms/frame; pose 1.50 ms/frame"
+        );
+        assert!(LoopStats::default().to_string().starts_with("0 game frames for 0 video frames (0.00 each"));
+    }
 
     #[test]
     fn one_line_summary() {

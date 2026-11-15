@@ -64,6 +64,9 @@ struct Render {
     day_time: Option<i64>,
     /// The SoulsCraft mobs' attacks, from the replay's messages, for the sheets' labels.
     mobs: engine::mob_labels::MobLabels,
+    /// Game frames and the glue's time per video frame, for the `render loop` log line.
+    loop_stats: engine::LoopStats,
+    loop_since: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -520,6 +523,8 @@ fn open_replay(game: &mut Game<'_>) {
             keys,
             day_time,
             mobs: Default::default(),
+            loop_stats: Default::default(),
+            loop_since: None,
         }));
     });
 }
@@ -602,7 +607,12 @@ fn tick_render(game: &mut Game<'_>) {
             render.warmup -= 1;
             return Next::Warm;
         }
+        let now = Instant::now();
+        let since = *render.loop_since.get_or_insert(now);
+        render.loop_stats.ticks += 1;
+        render.loop_stats.wall = now - since;
         if render.awaiting {
+            render.loop_stats.retries += 1;
             render.missed += 1;
             return Next::Retry;
         }
@@ -640,9 +650,11 @@ fn tick_render(game: &mut Game<'_>) {
                 Mode::Rendering(render) => (render.focus.clone(), render.focus_id),
                 _ => (None, None),
             });
+            let focus_start = Instant::now();
             let focus = spec
                 .as_ref()
                 .and_then(|spec| shot::find_focus(game, spec, &mut locked));
+            let pose_start = Instant::now();
             let label = STATE.with_borrow(|state| match &state.mode {
                 Mode::Rendering(render) => labels::line(game, &render.mobs, game_ms),
                 _ => String::new(),
@@ -656,7 +668,10 @@ fn tick_render(game: &mut Game<'_>) {
                         }
                         render.focus_id = locked;
                         render.job.label_next(&label);
-                        render.job.next_pose_focus(&probe, focus).map(|p| keyed_pose(render, game_ms, p))
+                        let pose = render.job.next_pose_focus(&probe, focus).map(|p| keyed_pose(render, game_ms, p));
+                        render.loop_stats.focus += pose_start - focus_start;
+                        render.loop_stats.pose += pose_start.elapsed();
+                        pose
                     }
                     _ => None,
                 })
@@ -694,7 +709,9 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
         QUEUE.with_borrow_mut(Vec::clear);
         return;
     };
-    let Render { job, dir, hide_gui_before, frames, .. } = *render;
+    let Render { job, dir, hide_gui_before, frames, mut loop_stats, .. } = *render;
+    loop_stats.frames = frames;
+    log::info!("letscam: render loop: {loop_stats}");
     let carry_on = outcome.is_ok();
     let message = match outcome {
         Ok(()) => match {

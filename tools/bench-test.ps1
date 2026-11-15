@@ -193,8 +193,8 @@ if (-not $NoMobs) {
     if ($labels) { Write-Host $labels.Matches[0].Value }
     $checks['sheets label attacks'] = [bool]($labels -and $labels.Matches[0].Value -match 'revenant')
 }
-# How fast each angle rendered (the encoder's own timing, one line per finished render).
-Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render stats: [^"]*' |
+# How fast each angle rendered: the encoder's timing and the game loop's, two lines per render.
+Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render (stats|loop): [^"]*' |
     ForEach-Object { Write-Host $_.Matches[0].Value }
 # The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
 # the whole recording, or the second half of every video has no player.

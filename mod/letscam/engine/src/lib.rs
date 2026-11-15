@@ -57,6 +57,6 @@ pub use pip::{Image, compose, load_png};
 pub use recording::Recording;
 pub use render::RenderJob;
 pub use render_options::RenderOptions;
-pub use render_stats::RenderStats;
+pub use render_stats::{LoopStats, RenderStats};
 pub use session::{AudioTrack, GuiEvent, GuiFrame, Session};
 pub use track::TrackSample;
