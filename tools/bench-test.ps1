@@ -19,7 +19,10 @@ param(
     # Skip the key editor and the `keys` angle.
     [switch]$NoKeys,
     # Skip the SoulsCraft revenant and the sheets' attack phase labels.
-    [switch]$NoMobs
+    [switch]$NoMobs,
+    # One more render of the same recording after the checked ones, e.g. the README's sheet:
+    # 'orbit x0.25 sheet=1 focus=soulscraft:revenant'.
+    [string]$ExtraRender = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
@@ -66,6 +69,9 @@ try {
     Invoke-Bot $bot 'chat /letscam' | Out-Null
     $buttons = Wait-Message $bot @('letscam: window open, buttons [^\n]*', 'открывается только[^\n]*') 20
     Write-Host $buttons
+    # The window as players see it (the README picture): the bench's earlier recordings listed.
+    Start-Sleep -Milliseconds 800
+    Invoke-Bot $bot "screenshot $(Join-Path $Scratch 'window.png')" | Out-Null
     $script:windowStarted = $buttons -match '"Начать запись", \(([\d.]+), ([\d.]+)\)'
     if ($windowStarted) {
         Invoke-Bot $bot "click-at $([int][double]$Matches[1]) $([int][double]$Matches[2])" | Out-Null
@@ -226,5 +232,21 @@ Write-Host "duration: $duration s, recording: $expected s"
 $failed = 0
 foreach ($k in $checks.Keys) {
     Write-Host ("{0,-22} {1}" -f $k, $(if ($checks[$k]) { 'ok' } else { $failed++; 'FAIL' }))
+}
+# The extra render after the checks: the last angle leaves the bot on the title screen, so a new
+# bot joins to type the command (its log replaces the checked one, which is no longer needed).
+if ($ExtraRender) {
+    $configBackup = Set-TestConfig
+    $bot = $null
+    try {
+        $bot = Start-LcBot $Scratch 1920 1080
+        Invoke-Bot $bot "chat /letscam render $($dir.Name) $ExtraRender" | Out-Null
+        Wait-Renders $bot 1 $RenderTimeoutSec | Write-Host
+        Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: (render (stats|loop)|mob labels): [^"]*' |
+            ForEach-Object { Write-Host $_.Matches[0].Value }
+    } finally {
+        if ($bot) { Stop-LcBot $bot }
+        Restore-TestConfig $configBackup
+    }
 }
 if ($failed) { exit 1 }
