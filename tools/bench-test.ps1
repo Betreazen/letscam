@@ -202,6 +202,11 @@ if (-not $NoMobs) {
 # How fast each angle rendered: the encoder's timing and the game loop's, two lines per render.
 Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'letscam: render (stats|loop): [^"]*' |
     ForEach-Object { Write-Host $_.Matches[0].Value }
+# Each video frame shows the replay time it should (the picture keeps pace with the sound): the
+# replay position at every posed frame stays within a tick of frame × step.
+$drifts = @(Select-String -Path ([IO.Path]::ChangeExtension($bot.Socket, 'log')) -Pattern 'replay drift -?\d+ ms \(max (-?\d+)\)' |
+    ForEach-Object { [math]::Abs([int]$_.Matches[0].Groups[1].Value) })
+$checks['replay keeps time'] = $drifts.Count -ge $AngleList.Count -and ($drifts | Measure-Object -Maximum).Maximum -le 60
 # The studio recorder can stop on its own (LetsCam then says so in chat): the replay must cover
 # the whole recording, or the second half of every video has no player.
 Add-Type -AssemblyName System.IO.Compression.FileSystem

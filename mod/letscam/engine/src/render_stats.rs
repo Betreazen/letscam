@@ -72,6 +72,21 @@ pub struct LoopStats {
     pub focus: Duration,
     /// The camera pose with its obstacle rays, and the sheet label.
     pub pose: Duration,
+    /// Replay position minus the time the frame should show, at the latest frame (ms): it stays
+    /// near 0 when the replay moves exactly one video frame per captured frame.
+    pub drift_ms: i64,
+    /// The largest drift seen, with its sign.
+    pub max_drift_ms: i64,
+}
+
+impl LoopStats {
+    /// Takes the drift of the frame just posed: the latest, and the largest so far.
+    pub fn note_drift(&mut self, drift_ms: i64) {
+        self.drift_ms = drift_ms;
+        if drift_ms.abs() > self.max_drift_ms.abs() {
+            self.max_drift_ms = drift_ms;
+        }
+    }
 }
 
 /// `total` over `n` in milliseconds (0 for none).
@@ -92,13 +107,15 @@ impl fmt::Display for LoopStats {
         };
         write!(
             f,
-            "{} game frames for {} video frames ({each:.2} each, {} retries); game frame {:.1} ms; focus {:.2} ms/frame; pose {:.2} ms/frame",
+            "{} game frames for {} video frames ({each:.2} each, {} retries); game frame {:.1} ms; focus {:.2} ms/frame; pose {:.2} ms/frame; replay drift {} ms (max {})",
             self.ticks,
             self.frames,
             self.retries,
             ms_per(self.wall, self.ticks),
             ms_per(self.focus, self.frames),
             ms_per(self.pose, self.frames),
+            self.drift_ms,
+            self.max_drift_ms,
         )
     }
 }
@@ -116,16 +133,27 @@ mod tests {
             wall: Duration::from_secs(40),
             focus: Duration::from_millis(500),
             pose: Duration::from_millis(1500),
+            drift_ms: -3,
+            max_drift_ms: 40,
         };
         assert_eq!(
             s.to_string(),
-            "2000 game frames for 1000 video frames (2.00 each, 990 retries); game frame 20.0 ms; focus 0.50 ms/frame; pose 1.50 ms/frame"
+            "2000 game frames for 1000 video frames (2.00 each, 990 retries); game frame 20.0 ms; focus 0.50 ms/frame; pose 1.50 ms/frame; replay drift -3 ms (max 40)"
         );
         assert!(
             LoopStats::default()
                 .to_string()
                 .starts_with("0 game frames for 0 video frames (0.00 each")
         );
+    }
+
+    #[test]
+    fn drift_keeps_the_latest_and_the_largest() {
+        let mut s = LoopStats::default();
+        for d in [0, 2, -7, 3, 1] {
+            s.note_drift(d);
+        }
+        assert_eq!((s.drift_ms, s.max_drift_ms), (1, -7));
     }
 
     #[test]

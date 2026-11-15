@@ -176,6 +176,11 @@ impl RenderJob {
         1000.0 / f64::from(self.cfg.fps)
     }
 
+    /// The replay time the next posed frame should show (ms).
+    pub fn next_frame_ms(&self) -> f64 {
+        self.posed as f64 * self.replay_step_ms()
+    }
+
     /// Replay time advanced per output frame: `frame_step_ms() × speed`.
     pub fn replay_step_ms(&self) -> f64 {
         self.frame_step_ms() * self.opts.speed

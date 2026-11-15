@@ -533,7 +533,6 @@ fn open_replay(game: &mut Game<'_>) {
 /// captured frame and not at all otherwise, whatever the wall clock did.
 pub fn before_replay_advance(game: &mut Game<'_>) {
     world::restore_pending(game);
-    let now = Instant::now();
     let step = STATE.with_borrow_mut(|state| {
         let Mode::Rendering(render) = &mut state.mode else {
             return None;
@@ -561,7 +560,11 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
         render.frames += 1;
         Some(Duration::from_secs_f64(render.job.replay_step_ms() / 1000.0))
     });
+    // The clock is read after the frame went to the encoder: Horizon measures the step from its
+    // own `now` right after this hook, and a `now` taken before `submit_frame` (2–4 ms) made the
+    // replay run ~12 % fast at x1 and ~50 % at x0.25, ahead of the sound (bench 2026-11-15 15:12).
     if let Some(step) = step {
+        let now = Instant::now();
         game.last_replay_tick = Some(now.checked_sub(step).unwrap_or(now));
     }
 }
@@ -672,6 +675,8 @@ fn tick_render(game: &mut Game<'_>) {
                         }
                         render.focus_id = locked;
                         render.job.label_next(&label);
+                        let expected = render.job.next_frame_ms().round() as i64;
+                        render.loop_stats.note_drift(i64::from(game_ms) - expected);
                         let pose = render.job.next_pose_focus(&probe, focus).map(|p| keyed_pose(render, game_ms, p));
                         render.loop_stats.focus += pose_start - focus_start;
                         render.loop_stats.pose += pose_start.elapsed();
