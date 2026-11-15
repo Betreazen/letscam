@@ -1,0 +1,18 @@
+name = "LetsCam"
+tagline = "Запись летсплеев для Minecraft на Horizon: вы играете как обычно, а ролик потом снимает невидимая камера-режиссёр от третьего лица"
+description = "site/description.md"
+preview = "site/preview.webp"
+
+# The first model is the mod's card. Both are built from code in Blender:
+# site/scene/build_scene.py writes them into assets/site/.
+
+[[model]]
+file = "assets/site/letscam.glb"
+name = "Камера-режиссёр"
+kind = "mob"
+clips = ["flyby", "top", "shoulder"]
+
+[[model]]
+file = "assets/site/drone.glb"
+name = "Дрон-камера"
+kind = "machine"
