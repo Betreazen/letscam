@@ -49,8 +49,9 @@ function Start-LcBot([string]$Scratch, [int]$Width = 1920, [int]$Height = 1080) 
 # write 1.0 back on exit). LetsCam's game track is then silence, which the checks allow.
 function Set-BotSilent([string]$PlayerDir) {
     $options = Join-Path $PlayerDir 'options.txt'
-    $lines = if (Test-Path $options) { @(Get-Content $options | Where-Object { $_ -notmatch '^soundCategory_master:' }) } else { @() }
-    Set-Content -Encoding utf8 $options ($lines + 'soundCategory_master:0.0')
+    $lines = if (Test-Path $options) { @(Get-Content $options | Where-Object { $_ -notmatch '^(soundCategory_master|tutorialStep):' }) } else { @() }
+    # No tutorial toast over the screenshots either.
+    Set-Content -Encoding utf8 $options ($lines + 'soundCategory_master:0.0' + 'tutorialStep:none')
 }
 
 function Stop-LcBot($Bot) {

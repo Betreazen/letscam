@@ -13,6 +13,12 @@ use std::path::PathBuf;
 
 const LEFT_BUTTON: i32 = 0;
 const WIDTH: f32 = 460.0;
+/// The window's footer, longest first: the first that fits the panel is drawn.
+const HINTS: [&str; 3] = [
+    "Ролик: камера-режиссёр. 4 ракурса: авто, сбоку, облёт, сверху. Ключи: свой путь камеры.",
+    "Ролик: режиссёр · 4 ракурса: авто, сбоку, облёт, сверху · Ключи: свой путь",
+    "4 ракурса: авто, сбоку, облёт, сверху · Ключи: свой путь",
+];
 const ROW_HEIGHT: f32 = 22.0;
 const MAX_ROWS: usize = 8;
 const PANEL: u32 = 0xE0181820;
@@ -165,7 +171,12 @@ pub fn draw(game: &Game<'_>, batch: &mut HudBatch, screen: &NativeScreenView<'_>
             let line = format!("{} · {}:{:02}{mark}", e.name, e.seconds / 60, e.seconds % 60);
             game.native_text(batch, &line, [x + 10.0, row_y + 4.0], WHITE, true);
         }
-        let hint = "Ролик: камера-режиссёр. 4 ракурса: авто, сбоку, облёт, сверху. Ключи: свой путь камеры.";
+        // The longest hint that fits the panel (the full one ran past its right edge).
+        let hint = HINTS
+            .iter()
+            .copied()
+            .find(|h| game.native_text_width(h) <= WIDTH - 20.0)
+            .unwrap_or(HINTS[HINTS.len() - 1]);
         let footer_y = y + panel_height(entries.len()) - 14.0;
         game.native_text(batch, hint, [x + 10.0, footer_y], GREY, true);
     });

@@ -579,6 +579,10 @@ fn keyed_pose(render: &Render, t_ms: u32, pose: engine::CameraPose) -> engine::C
 }
 
 fn tick_render(game: &mut Game<'_>) {
+    // Nobody touches the keyboard during a render: after 60 s without input the frame limiter
+    // (`FramerateLimitTracker`, "short AFK") caps the game at 30 fps, and every angle past the
+    // first minute rendered ~2.7x slower (13 ms → 35 ms a frame). A rendered frame counts as input.
+    game.last_input = Instant::now();
     let (day_time, first_person) = STATE.with_borrow(|state| match &state.mode {
         Mode::Rendering(render) => (
             render.day_time,
