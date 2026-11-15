@@ -79,7 +79,7 @@ horizon-launcher mods add-github https://github.com/Betreazen/letscam --trust-na
 horizon-launcher native-build --trust-native-code
 ```
 
-Мод только клиентский: серверу он не нужен, играть с ним можно на любом сервере. Он собирается на коммите Horizon, который закреплён в `mod/letscam/horizon-mixin.toml` (`[compatibility] horizon_revision`). Если другие ваши нативные моды закреплены на другом коммите, лаунчер предложит **Build anyway**.
+Мод только клиентский: серверу он не нужен, играть с ним можно на любом сервере. В сборке [pack-sync](https://github.com/Betreazen/horizon-pack-sync) указывайте его с `"side": "client"`: его крейт под Linux не собирается, и в серверный движок он попадать не должен. Он собирается на коммите Horizon, который закреплён в `mod/letscam/horizon-mixin.toml` (`[compatibility] horizon_revision`). Если другие ваши нативные моды закреплены на другом коммите, лаунчер предложит **Build anyway**.
 
 Если ffmpeg не лежит в `PATH`, укажите путь к нему в `config/letscam-client.toml` (ключ `ffmpeg`), затем `/letscam reload`.
 
@@ -179,6 +179,7 @@ horizon-launcher native-build --trust-native-code
 - **Замирание в начале.** При старте записи игра на миг замирает, пока рекордер сохраняет снимок мира.
 - **Звук только в Windows.** Звук игры пишется только в Windows.
 - **Одна камера.** Живой второй камеры во время игры нет, ролик всегда рендерится после.
+- **Свёрнутое окно.** Во время рендера окно игры лучше не сворачивать: свёрнутое Horizon рисует 10 кадров в секунду (Dynamic FPS — 1), и рендер замедляется, пока окно не развернут. Переключаться на другие окна можно.
 
 Сообщения модов и время суток Horizon теряет в реплеях ([#16039](https://github.com/horizon-rust/horizon/issues/16039), [#16040](https://github.com/horizon-rust/horizon/issues/16040)), LetsCam обходит это сам.
 
