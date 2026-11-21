@@ -1,0 +1,159 @@
+id = "letscam"
+name = "LetsCam"
+version = "0.2.0"
+description = """Records let's plays with an invisible third-person director camera: the studio replay,
+game audio, microphone and GUI are captured while you play, and /letscam render turns them into
+video with angles of your choice."""
+authors = ["Betreazen"]
+api = "0.2"
+# Client only: recording and rendering happen in the player's own game.
+side = "client"
+# The one value every manifest carries; LetsCam itself registers nothing.
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "8f83e5c85ae3b9a117f742e8d91170c5c9080a06"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+# The game glue: support modules in the mirror of `crate::game`, so they see Game's private items.
+# Paths in helpers: crate::game::letscam_*.
+[[native.module]]
+id = "glue"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_glue"
+source = "src/modules/glue.rs"
+
+[[native.module]]
+id = "world"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_world"
+source = "src/modules/world.rs"
+
+[[native.module]]
+id = "shot"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_shot"
+source = "src/modules/shot.rs"
+
+[[native.module]]
+id = "diag"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_diag"
+source = "src/modules/diag.rs"
+
+[[native.module]]
+id = "labels"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_labels"
+source = "src/modules/labels.rs"
+
+[[native.module]]
+id = "edit"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_edit"
+source = "src/modules/edit.rs"
+
+[[native.module]]
+id = "screen"
+file = "crates/horizon-client/src/game.rs"
+name = "letscam_screen"
+source = "src/modules/screen.rs"
+
+# A captured frame: the readback of a `letscam-capture:` screenshot request goes to LetsCam's
+# hand-off (bridge.rs) instead of a file.
+[[native.mixin]]
+id = "save_screenshot"
+target = "horizon_client::game::chat::Game<'_>::save_screenshot"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/save_screenshot.rs"
+bindings = [
+  { name = "pending", ty = "&mut horizon_client::gfx::PendingScreenshot", value = "&mut pending" },
+]
+
+[[native.mixin]]
+id = "advance_replay"
+target = "horizon_client::game::replay::Game<'_>::advance_studio_replay"
+kind = "HEAD"
+helper = "src/mixins/advance_replay.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "frame"
+target = "horizon_client::game::native_hooks::render_frame_pre::Game<'_>::native_render_frame_pre"
+kind = "HEAD"
+helper = "src/mixins/frame.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "key"
+target = "horizon_client::game::native_hooks::input_key::Game<'_>::native_input_key"
+kind = "HEAD"
+helper = "src/mixins/key.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "action", ty = "mod_api::KeyAction", value = "action" },
+]
+
+[[native.mixin]]
+id = "command"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_command"
+kind = "HEAD"
+helper = "src/mixins/command.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+[[native.mixin]]
+id = "hud"
+target = "horizon_client::game::native_hooks::render_gui_post::Game<'_>::native_render_gui_post"
+kind = "HEAD"
+helper = "src/mixins/hud.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "batch", ty = "&mut HudBatch", value = "&mut *draw" },
+]
+
+# The window's drawing. Not on `native_screen_render_post`: the game builds the screen view for
+# it only when a mod subscribes to a screen render hook through the trait API
+# (`screen_render_listened`), which a mixin-only mod never does, so the window opened undrawn.
+[[native.mixin]]
+id = "screen_render_post"
+target = "horizon_client::game::screen_backgrounds::Game<'_>::draw_screen_with_post_hook"
+kind = "HEAD"
+helper = "src/mixins/screen_render_post.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+[[native.mixin]]
+id = "screen_mouse_button_pressed_pre"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_screen_mouse_button_pressed_pre"
+kind = "HEAD"
+helper = "src/mixins/screen_mouse_button_pressed_pre.rs"
+bindings = [
+  { name = "game", ty = "&Game<'_>", value = "&*self" },
+  { name = "screen", ty = "&ScreenView<'_>", value = "screen" },
+  { name = "button", ty = "i32", value = "button" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+# Attachment sync payloads are recorded into the studio replay, which drops custom payloads.
+[[native.mixin]]
+id = "attachment_sync_recorded"
+target = "horizon_client::game::attachment_sync::Game<'_>::remote_attachment_sync"
+kind = "HEAD"
+helper = "src/mixins/attachment_sync_recorded.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "data", ty = "&[u8]", value = "data" },
+]

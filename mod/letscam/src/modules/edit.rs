@@ -90,11 +90,11 @@ fn open(game: &mut Game<'_>, dir: PathBuf) {
         say(game, format!("Реплей не открылся: {why}"));
         return;
     }
-    if let Some(driver) = game.studio_replay.as_mut() {
+    if let Some(driver) = game.replay.driver.as_mut() {
         driver.set_paused(true);
     }
-    game.studio_freecam.locked_to_path = false;
-    let keys = game.studio_freecam.track.len();
+    game.studio.freecam.locked_to_path = false;
+    let keys = game.studio.freecam.track.len();
     let day_time = world::load_day_time(&dir);
     log::info!("letscam: key editor open, {keys} keyframes");
     say(game, format!("Правка ключей: ключей {keys}. {HELP}"));
@@ -103,16 +103,15 @@ fn open(game: &mut Game<'_>, dir: PathBuf) {
 
 /// The free camera over the recorded player's shoulder, once the replay shows the player.
 fn place_camera(game: &mut Game<'_>) -> bool {
-    let Some(state) = game.native_client_state() else { return false };
-    let Some(eye) = state.eye_position else { return false };
-    let yaw = state.yaw.to_radians();
+    let Some(eye) = game.eye_position() else { return false };
+    let yaw = game.yaw.to_radians();
     let forward = [-f64::from(yaw.sin()), f64::from(yaw.cos())];
     let pos = glam::DVec3::new(
         eye[0] - forward[0] * START_BACK,
         eye[1] + START_UP,
         eye[2] - forward[1] * START_BACK,
     );
-    game.studio_freecam.activate(pos, state.yaw, 15.0, START_FOV);
+    game.studio.freecam.activate(pos, game.yaw, 15.0, START_FOV);
     true
 }
 
@@ -133,7 +132,7 @@ pub fn on_frame(game: &mut Game<'_>) {
     }) else {
         return;
     };
-    if game.studio_replay.is_none() {
+    if game.replay.driver.is_none() {
         // Closed some other way (`/studio replay close`): the game saved the path already.
         finish(game, false);
         return;
@@ -150,11 +149,11 @@ pub fn on_frame(game: &mut Game<'_>) {
 }
 
 fn replay_ms(game: &Game<'_>) -> u32 {
-    game.studio_replay.as_ref().map_or(0, |d| d.position_ms())
+    game.replay.driver.as_ref().map_or(0, |d| d.position_ms())
 }
 
 fn seek(game: &mut Game<'_>, dir: &Path, forward: bool) {
-    let Some(driver) = game.studio_replay.as_ref() else { return };
+    let Some(driver) = game.replay.driver.as_ref() else { return };
     let now = driver.position_ms();
     let target = if forward {
         now.saturating_add(SEEK_STEP_MS).min(driver.duration_ms())
@@ -177,30 +176,30 @@ pub fn on_key(game: &mut Game<'_>, key: &str) -> bool {
     };
     match key {
         KEY_ADD => {
-            if !game.studio_freecam.active {
+            if !game.studio.freecam.active {
                 say(game, "Свободная камера выключена: ключ ставится с неё.");
                 return true;
             }
             let t = replay_ms(game);
-            game.studio_freecam.add_keyframe_at_current(t);
-            game.studio_camera_track_dirty = true;
-            log::info!("letscam: keyframe at {t} ms ({} in all)", game.studio_freecam.track.len());
+            game.studio.freecam.add_keyframe_at_current(t);
+            game.studio.camera_track_dirty = true;
+            log::info!("letscam: keyframe at {t} ms ({} in all)", game.studio.freecam.track.len());
         }
         KEY_REMOVE => {
             let t = replay_ms(game);
-            if game.studio_freecam.track.remove_near(t, REMOVE_WINDOW_MS) {
-                game.studio_camera_track_dirty = true;
+            if game.studio.freecam.track.remove_near(t, REMOVE_WINDOW_MS) {
+                game.studio.camera_track_dirty = true;
             }
         }
         KEY_PAUSE => {
-            if let Some(driver) = game.studio_replay.as_mut() {
+            if let Some(driver) = game.replay.driver.as_mut() {
                 let paused = driver.is_paused();
                 driver.set_paused(!paused);
             }
         }
         KEY_BACK | KEY_FORWARD => seek(game, &dir, key == KEY_FORWARD),
         KEY_PREVIEW => {
-            let cam = &mut game.studio_freecam;
+            let cam = &mut game.studio.freecam;
             cam.locked_to_path = !cam.locked_to_path && cam.track.len() >= 2;
         }
         KEY_DONE => finish(game, true),
@@ -212,8 +211,8 @@ pub fn on_key(game: &mut Game<'_>, key: &str) -> bool {
 /// Saves the path (the game writes it into the replay as it closes) and notes its keyframes.
 fn finish(game: &mut Game<'_>, close: bool) {
     let Some(Edit::Open { dir, .. }) = EDIT.with_borrow_mut(Option::take) else { return };
-    let keys = game.studio_freecam.track.len();
-    game.studio_freecam.locked_to_path = false;
+    let keys = game.studio.freecam.track.len();
+    game.studio.freecam.locked_to_path = false;
     if close {
         game.close_studio_replay();
     }
@@ -244,15 +243,15 @@ pub fn on_hud(game: &Game<'_>, batch: &mut HudBatch) {
     if !EDIT.with_borrow(|edit| matches!(edit, Some(Edit::Open { .. }))) {
         return;
     }
-    let Some(driver) = game.studio_replay.as_ref() else { return };
+    let Some(driver) = game.replay.driver.as_ref() else { return };
     let clock = |ms: u32| format!("{}:{:02}.{}", ms / 60_000, ms / 1000 % 60, ms / 100 % 10);
     let pause = if driver.is_paused() { "⏸" } else { "▶" };
-    let preview = if game.studio_freecam.locked_to_path { " · просмотр пути" } else { "" };
+    let preview = if game.studio.freecam.locked_to_path { " · просмотр пути" } else { "" };
     let line = format!(
         "LetsCam · ключи {pause} {} / {} · ключей {}{preview}",
         clock(driver.position_ms()),
         clock(driver.duration_ms()),
-        game.studio_freecam.track.len()
+        game.studio.freecam.track.len()
     );
     let atlas = &game.gui.atlas;
     batch.text(atlas, &line, 6.0, 6.0, 0xFFFF_D060, true);

@@ -2,27 +2,20 @@
 // messages, which LetsCam writes into the recording (`record_payload`), come back as the replay
 // plays; each frame's line names the mobs by their entity type. Compiled as the child module
 // `game::letscam_labels`.
+//
+// TODO(mod-api): the messages came through `horizon_protocol::mod_net`, which is gone (mod
+// payloads now use the raw payload transport), and `take_payload` decoded them from it. Until
+// LetsCam records and replays SoulsCraft's state from the new transport, nothing feeds
+// `MobLabels`, so `line` gives an empty line and the sheets carry no mob phases.
 use super::Game;
-use horizon_client_render::letscam::engine::mob_labels::{self, MobLabels};
-
-/// A mod message the replay just played at `at_ms`: SoulsCraft's mob state goes into `mobs`.
-pub fn take_payload(data: &[u8], at_ms: u32, mobs: &mut MobLabels) {
-    let Ok(message) = horizon_protocol::mod_net::decode(data) else { return };
-    if message.channel != mob_labels::STATE_CHANNEL {
-        return;
-    }
-    match mob_labels::decode(&message.data) {
-        Some(batch) => mobs.apply(batch, at_ms),
-        None => log::warn!("letscam: a {} message LetsCam can't read", mob_labels::STATE_CHANNEL),
-    }
-}
+use letscam_engine::mob_labels::MobLabels;
 
 /// The line for the frame at replay time `t_ms`; empty without SoulsCraft mobs at work.
 pub fn line(game: &Game<'_>, mobs: &MobLabels, t_ms: u32) -> String {
     if mobs.is_empty() {
         return String::new();
     }
-    let entities = game.native_client_entities();
+    let entities = super::letscam_shot::entities(game);
     mobs.line(t_ms, |id| {
         entities
             .iter()

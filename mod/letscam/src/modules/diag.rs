@@ -12,16 +12,14 @@ thread_local! {
 
 /// Logs this frame's body-in-view change and, each half second of replay time, the sync line.
 pub(super) fn log_frame(game: &Game<'_>) {
-    let in_view = (game.own_body_in_view(), game.studio_freecam.active);
+    let in_view = (game.own_body_in_view(), game.studio.freecam.active);
     if LAST_BODY_IN_VIEW.get() != Some(in_view) {
         LAST_BODY_IN_VIEW.set(Some(in_view));
-        let t = game.studio_replay.as_ref().map_or(0, |d| d.position_ms());
+        let t = game.replay.driver.as_ref().map_or(0, |d| d.position_ms());
         log::info!("letscam: body in view={} freecam={} at t_ms={t}", in_view.0, in_view.1);
     }
     // Sync diagnostics: where the replay shows the player, at which replay time (twice a second).
-    if let (Some(driver), Some(state)) = (game.studio_replay.as_ref(), game.native_client_state())
-        && let Some(eye) = state.eye_position
-    {
+    if let (Some(driver), Some(eye)) = (game.replay.driver.as_ref(), game.eye_position()) {
         let t = driver.position_ms();
         if t / 500 != LAST_SYNC_LOG.get() {
             LAST_SYNC_LOG.set(t / 500);
@@ -50,18 +48,17 @@ pub(super) fn log_frame(game: &Game<'_>) {
             let near = |p: [f64; 3]| {
                 (p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2) < 64.0
             };
-            let players: Vec<(u32, String, [f64; 3], f32, bool)> = game
-                .native_client_entities()
-                .iter()
+            let players: Vec<(u32, String, [f64; 3], f32, bool)> = super::letscam_shot::entities(game)
+                .into_iter()
                 .filter(|e| near(e.position))
-                .map(|e| (e.id, e.kind.clone(), e.position, e.yaw, e.player_uuid.is_some()))
+                .map(|e| (e.id, e.kind, e.position, e.yaw, e.player))
                 .collect();
             // Why the own model may not be drawn (perspective.rs player_model_shown / own_body_visible).
             let shown = game.player_model_shown();
             let body = game.own_body_visible();
             let dead = game.player.as_ref().map(|p| p.health.dead_or_dying());
-            let freecam = game.studio_freecam.active;
-            let first = game.camera_type.first_person();
+            let freecam = game.studio.freecam.active;
+            let first = game.camera_type.is_first_person();
             log::info!(
                 "letscam: sync t_ms={t} replay_eye={eye:?} model={model:?} players={players:?} \
                  shown={shown} body={body} dead={dead:?} freecam={freecam} first_person={first} \

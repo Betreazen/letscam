@@ -9,16 +9,12 @@ use super::letscam_edit as edit;
 use super::letscam_labels as labels;
 use super::letscam_world as world;
 use horizon_client::text::Text;
-use horizon_client_render::letscam::{self as bridge, engine};
+use letscam_engine::{self as engine, bridge};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-pub const ID: &str = "letscam";
-const KEY_TOGGLE: &str = "toggle";
-const KEY_TOGGLE_DEFAULT: &str = "key.keyboard.f9";
-const KEY_MENU: &str = "menu";
-const KEY_MENU_DEFAULT: &str = "key.keyboard.f10";
+pub const ID: &str = engine::MOD_ID;
 const KEY_CANCEL: &str = "key.keyboard.escape";
 const CONFIG_FILE: &str = "config/letscam-client.toml";
 const DEFAULT_OUTPUT: &str = "letscam";
@@ -146,7 +142,7 @@ pub fn start_recording(game: &mut Game<'_>) {
         say(game, "Уже идёт запись или рендер.");
         return;
     }
-    if game.remote.is_none() || game.studio_replay.is_some() {
+    if game.remote.is_none() || game.replay.driver.is_some() {
         say(game, "Запись работает только в мире.");
         return;
     }
@@ -199,7 +195,7 @@ pub fn start_recording(game: &mut Game<'_>) {
             recorder_stopped: false,
         }));
     });
-    let key = game.native_mod_key(ID, KEY_TOGGLE, KEY_TOGGLE_DEFAULT);
+    let key = bound_key(game, engine::KEY_TOGGLE, engine::KEY_TOGGLE_DEFAULT);
     say(
         game,
         format!("Запись началась: {}. Остановить: {key} или /letscam stop", dir.display()),
@@ -258,16 +254,15 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn track_sample(game: &Game<'_>, rec: &mut Rec, now: Instant) -> Option<engine::TrackSample> {
-    let state = game.native_client_state()?;
-    let eye = state.eye_position?;
+    let eye = game.eye_position()?;
     let swings = game.swings_started;
     let attacking = swings != rec.swings_seen;
     rec.swings_seen = swings;
     Some(engine::TrackSample {
         t_ms: now.saturating_duration_since(rec.started).as_millis() as u32,
         eye,
-        yaw: state.yaw,
-        pitch: state.pitch,
+        yaw: game.yaw,
+        pitch: game.pitch,
         gui_open: rec.gui_open,
         fall_flying: game.player.as_ref().is_some_and(|p| p.fall_flying),
         hurt_or_attacking: attacking,
@@ -282,9 +277,9 @@ fn tick_recording(game: &mut Game<'_>) {
         stop_recording(game);
         return;
     }
-    let gui_open = game
-        .native_client_state()
-        .is_some_and(|s| s.screen == super::native_client_services::NativeScreenKind::Other);
+    // The inventory or a block's window (every container and station draws on the inventory
+    // screen), as the spec has it; chat and the pause menu are not filmed as GUI.
+    let gui_open = matches!(game.screen, super::Screen::Inventory | super::Screen::Creative);
     watch_recorder(game, now);
     let captured = bridge::take();
     let want_gui = STATE.with_borrow_mut(|state| {
@@ -313,22 +308,29 @@ fn tick_recording(game: &mut Game<'_>) {
         gui_open && rec.recording.gui_frame_due(now)
     });
     if want_gui {
-        request_capture(game, TAG_GUI);
+        // Read back on the renderer's worker: a GUI snapshot no longer stalls the frame of a
+        // live game; it comes back a frame or so later and is taken above whenever it does.
+        request_capture(game, TAG_GUI, true);
     }
 }
 
-/// Ask for the next drawn frame's pixels under `tag`; false while another screenshot waits.
-fn request_capture(game: &mut Game<'_>, tag: &str) -> bool {
+/// Ask for the next drawn frame's pixels under `tag`; false while another screenshot is queued
+/// or still being read back (the renderer takes one at a time). `background` reads it back on
+/// the renderer's worker, a frame or more later; without it the frame's pixels are read back
+/// before the frame ends, as every capture was before the mod API. The path is LetsCam's
+/// marker, which no chat line or file is made for: the `save_screenshot` mixin takes it.
+fn request_capture(game: &mut Game<'_>, tag: &str, background: bool) -> bool {
     let Some(renderer) = game.renderer.as_mut() else {
         return false;
     };
-    if renderer.screenshot.is_some() {
+    if renderer.screenshot_in_flight() {
         return false;
     }
     renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
         path: bridge::capture_path(tag),
         size: None,
         scaled: false,
+        background,
     });
     true
 }
@@ -497,12 +499,12 @@ fn open_replay(game: &mut Game<'_>) {
         say(game, format!("Реплей не открылся: {why}"));
         return;
     }
-    if let Some(driver) = game.studio_replay.as_mut() {
+    if let Some(driver) = game.replay.driver.as_mut() {
         driver.set_paused(true);
     }
     let day_time = world::load_day_time(&dir);
-    let keys = std::mem::take(&mut game.studio_freecam.track);
-    game.studio_freecam.locked_to_path = false;
+    let keys = std::mem::take(&mut game.studio.freecam.track);
+    game.studio.freecam.locked_to_path = false;
     if job.options().preset == engine::ShotPreset::Keys {
         log::info!("letscam: keys path with {} keyframes", keys.len());
     }
@@ -538,8 +540,14 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
             return None;
         };
         if render.warmup > 0 || !render.awaiting {
+            // A frame here was asked for by no one waiting: a GUI snapshot of the recording, or
+            // the readback of a render cancelled while it ran (readback can finish frames after
+            // the request). Dropped, so it can't pass for the next frame this render asks for.
+            drop(bridge::take());
             return Some(Duration::ZERO);
         }
+        // The requested frame may still be on the renderer's worker: until it is handed over
+        // the replay stays where the frame was posed (a zero step), so none is skipped.
         let Some(frame) = bridge::take() else {
             return Some(Duration::ZERO);
         };
@@ -565,12 +573,12 @@ pub fn before_replay_advance(game: &mut Game<'_>) {
     // replay run ~12 % fast at x1 and ~50 % at x0.25, ahead of the sound (bench 2026-11-15 15:12).
     if let Some(step) = step {
         let now = Instant::now();
-        game.last_replay_tick = Some(now.checked_sub(step).unwrap_or(now));
+        game.replay.last_tick = Some(now.checked_sub(step).unwrap_or(now));
     }
 }
 
 fn replay_ms(game: &Game<'_>) -> u32 {
-    game.studio_replay.as_ref().map_or(0, |d| d.position_ms())
+    game.replay.driver.as_ref().map_or(0, |d| d.position_ms())
 }
 
 /// The `keys` angle: the studio path's pose at the replay's time, the director's elsewhere.
@@ -652,13 +660,16 @@ fn tick_render(game: &mut Game<'_>) {
                 shot::apply_pose(game, pose, first_person);
             }
             if STATE.with_borrow(|s| matches!(&s.mode, Mode::Rendering(r) if r.warmup == 0))
-                && let Some(driver) = game.studio_replay.as_mut()
+                && let Some(driver) = game.replay.driver.as_mut()
             {
                 driver.set_paused(false);
             }
         }
         Next::Retry => {
-            request_capture(game, TAG_RENDER);
+            // Asks again only when no capture is in flight: the one asked for was lost (a
+            // failed readback, or F2 replacing the queued request). While it is still being
+            // read back this does nothing, so the same pose is never captured twice.
+            request_capture(game, TAG_RENDER, false);
         }
         Next::Pose => {
             let game_ms = replay_ms(game);
@@ -697,13 +708,17 @@ fn tick_render(game: &mut Game<'_>) {
             match pose {
                 Some(pose) => {
                     shot::apply_pose(game, pose, first_person);
-                    if request_capture(game, TAG_RENDER) {
-                        STATE.with_borrow_mut(|state| {
-                            if let Mode::Rendering(render) = &mut state.mode {
-                                render.awaiting = true;
-                            }
-                        });
-                    }
+                    // Read back within this frame (not on the worker): the next advance finds the
+                    // frame waiting and steps the replay, one game frame per video frame as before
+                    // the mod API; the zero step there still covers a frame that comes late.
+                    // Awaited even when the request had to wait (another screenshot in flight):
+                    // `Retry` asks for this pose again, where a new pose would have dropped it.
+                    request_capture(game, TAG_RENDER, false);
+                    STATE.with_borrow_mut(|state| {
+                        if let Mode::Rendering(render) = &mut state.mode {
+                            render.awaiting = true;
+                        }
+                    });
                 }
                 None => finish_render(game, Ok(())),
             }
@@ -797,7 +812,7 @@ pub fn on_frame(game: &mut Game<'_>) {
         Phase::Recording => tick_recording(game),
         Phase::Leaving => open_replay(game),
         Phase::Rendering => {
-            if game.studio_replay.is_none() {
+            if game.replay.driver.is_none() {
                 finish_render(game, Err("реплей закрыт".into()));
             } else {
                 tick_render(game);
@@ -820,15 +835,22 @@ pub fn on_key(game: &mut Game<'_>, key: &str, pressed: bool) {
         }
         return;
     }
-    if key == game.native_mod_key(ID, KEY_TOGGLE, KEY_TOGGLE_DEFAULT) {
+    if key == bound_key(game, engine::KEY_TOGGLE, engine::KEY_TOGGLE_DEFAULT) {
         if is_recording() {
             stop_recording(game);
         } else {
             start_recording(game);
         }
-    } else if key == game.native_mod_key(ID, KEY_MENU, KEY_MENU_DEFAULT) {
+    } else if key == bound_key(game, engine::KEY_MENU, engine::KEY_MENU_DEFAULT) {
         super::letscam_screen::open(game);
     }
+}
+
+/// The key the player bound LetsCam's mapping `name` to on Controls (the crate registers both,
+/// lib.rs), its default should the mapping be missing. The modifiers are not compared: the key
+/// hook gets the bare key, and both defaults have none.
+fn bound_key(game: &Game<'_>, name: &str, default: &str) -> String {
+    game.mod_key(ID, name).map_or_else(|| default.to_owned(), |(key, _)| key)
 }
 
 /// A click in the window, carried out here where the game is writable.
@@ -837,7 +859,7 @@ fn run_screen_action(game: &mut Game<'_>) {
     let Some(action) = super::letscam_screen::take_action() else { return };
     match action {
         Action::ToggleRecording => {
-            game.native_mod_screen_close(ID);
+            game.mod_screen_close(ID);
             if is_recording() {
                 stop_recording(game);
             } else {
@@ -845,13 +867,13 @@ fn run_screen_action(game: &mut Game<'_>) {
             }
         }
         Action::Render { folder, words } => {
-            game.native_mod_screen_close(ID);
+            game.mod_screen_close(ID);
             let mut all = vec![folder.as_str()];
             all.extend(words);
             start_render(game, &all);
         }
         Action::Edit { folder } => {
-            game.native_mod_screen_close(ID);
+            game.mod_screen_close(ID);
             edit::start(game, Some(&folder));
         }
         Action::OpenFolder(dir) => {
@@ -888,15 +910,14 @@ pub fn on_command(game: &mut Game<'_>, command: &str, ran: &mut bool) {
     }
 }
 
-pub fn on_hud(game: &mut Game<'_>, batch: &mut horizon_client::hud::HudBatch) {
+pub fn on_hud(game: &Game<'_>, batch: &mut horizon_client::hud::HudBatch) {
     edit::on_hud(game, batch);
     let elapsed = STATE.with_borrow(|state| match &state.mode {
         Mode::Recording(rec) => Some(Instant::now().saturating_duration_since(rec.started)),
         _ => None,
     });
     let Some(elapsed) = elapsed else { return };
-    let Some(state) = game.native_client_state() else { return };
-    if state.gui_hidden {
+    if game.ui.hide_gui || game.player.is_none() {
         return;
     }
     let secs = elapsed.as_secs();
@@ -905,34 +926,15 @@ pub fn on_hud(game: &mut Game<'_>, batch: &mut horizon_client::hud::HudBatch) {
     let text = format!("{dot} REC {}:{:02}", secs / 60, secs % 60);
     let atlas = &game.gui.atlas;
     let width = horizon_client::hud::HudBatch::text_width(atlas, &text);
-    let x = state.gui_size[0] - width - 6.0;
+    let x = batch.width - width - 6.0;
     batch.text(atlas, &text, x, 6.0, 0xFFFF_5555, true);
 }
 
-pub fn on_mods(mods: &mut Vec<crate::mod_api::NativeMod>) {
-    mods.push(crate::mod_api::NativeMod {
-        id: ID.to_owned(),
-        title: "LetsCam".to_owned(),
-        description: "Запись летсплеев: невидимая камера от третьего лица снимает игру по \
-                      реплею, звук игры и микрофон — отдельными дорожками. Клавиша начинает и \
-                      останавливает запись, вторая (F10) открывает окно записей с кнопками рендера."
-            .to_owned(),
-        keys: vec![
-            [
-                KEY_TOGGLE.to_owned(),
-                "Начать/остановить запись".to_owned(),
-                KEY_TOGGLE_DEFAULT.to_owned(),
-            ],
-            [KEY_MENU.to_owned(), "Окно записей".to_owned(), KEY_MENU_DEFAULT.to_owned()],
-        ],
-    });
-}
-
 /// A mod payload the server just sent, written into the studio recording the studio's own filter
-/// leaves it out of (see horizon-mixin.toml, `mod_net_recorded`). Only while LetsCam records a
+/// leaves it out of (horizon-mod.toml, `attachment_sync_recorded`). Only while LetsCam records a
 /// live world: in a replay the same functions run for the payloads read back.
 pub fn record_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
-    if !is_recording() || game.studio_replay.is_some() {
+    if !is_recording() || game.replay.driver.is_some() {
         return;
     }
     let Some(remote) = game.remote.as_ref() else { return };
@@ -948,15 +950,10 @@ pub fn record_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
     remote.session.record_clientbound(&packet);
 }
 
-/// A mod payload the replay being rendered just played: SoulsCraft's mob state for the labels.
-pub fn replay_payload(game: &Game<'_>, data: &[u8]) {
-    let at_ms = replay_ms(game);
-    STATE.with_borrow_mut(|state| {
-        if let Mode::Rendering(render) = &mut state.mode {
-            labels::take_payload(data, at_ms, &mut render.mobs);
-        }
-    });
-}
+// TODO(mod-api): SoulsCraft's `soulscraft:state` messages came through `horizon_protocol::mod_net`,
+// recorded here and fed back while rendering (`replay_payload`, the `mod_net_recorded` mixin).
+// That transport is gone (mod payloads now use the raw payload transport), so nothing fills
+// `Render::mobs` and the sheets' mob line stays empty until it is recorded from the new one.
 
 /// The studio recorder stops on its own when its queue overflows or its file write fails, and
 /// says so only in its status: checked every frame while recording, told once in chat with the

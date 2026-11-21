@@ -1,6 +1,5 @@
-// horizon_client_render::letscam: LetsCam's crate, re-exported so the game reaches it, and the
-// hand-off of captured frames from the renderer (write_screenshot.rs) to the game (glue.rs).
-pub use letscam_engine as engine;
+// The hand-off of captured frames from the screenshot readback (the `save_screenshot` mixin,
+// mixins/save_screenshot.rs) to the game glue (modules/glue.rs).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

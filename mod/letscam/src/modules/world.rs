@@ -29,7 +29,7 @@ pub(super) fn load_day_time(dir: &Path) -> Option<i64> {
 
 /// The recorded time of day at the replay's current position.
 pub(super) fn apply_day_time(game: &mut Game<'_>, start: Option<i64>) {
-    let (Some(start), Some(driver)) = (start, game.studio_replay.as_ref()) else {
+    let (Some(start), Some(driver)) = (start, game.replay.driver.as_ref()) else {
         return;
     };
     let ticks = (f64::from(driver.position_ms()) * TICKS_PER_MS) as i64;
@@ -124,9 +124,9 @@ pub(super) fn pin_replay_player(game: &mut Game<'_>, first_person: bool) {
     // angle is the opposite case: its camera sits in the head, so the body must stay hidden
     // (first person, and the free camera off below).
     game.camera_type = if first_person {
-        super::perspective::CameraType::FirstPerson
+        horizon_client::camera::CameraType::FirstPerson
     } else {
-        super::perspective::CameraType::ThirdPersonBack
+        horizon_client::camera::CameraType::ThirdPersonBack
     };
     // The client's own physics still ticks in a standalone replay, on the wall clock and with
     // block collision (doors included), and moves the player between recorded positions, which

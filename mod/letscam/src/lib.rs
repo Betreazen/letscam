@@ -4,6 +4,7 @@
 //!
 //! The engine glue (Horizon hooks) calls into this crate; nothing here knows about the game.
 
+pub mod bridge;
 pub mod capture;
 pub mod config;
 mod config_template;
@@ -28,6 +29,36 @@ pub mod sheet;
 mod timeline;
 pub mod track;
 pub mod wav;
+
+/// LetsCam's two keys on Options > Controls, rebindable there; the game glue (modules/glue.rs)
+/// reads the player's binding with `Game::mod_key(MOD_ID, …)` and compares it in its key hook.
+pub const MOD_ID: &str = "letscam";
+pub const KEY_TOGGLE: &str = "toggle";
+pub const KEY_TOGGLE_DEFAULT: &str = "key.keyboard.f9";
+pub const KEY_MENU: &str = "menu";
+pub const KEY_MENU_DEFAULT: &str = "key.keyboard.f10";
+
+// The mod API entry point, at the crate root as #[horizon_mod] requires. LetsCam reaches the
+// game through its [[native.mixin]] rows and support modules (horizon-mod.toml); the API part
+// is only its keys, which the old `mods` hook used to declare.
+#[derive(Default)]
+struct LetsCam;
+
+#[mod_api::horizon_mod]
+impl mod_api::Hooks for LetsCam {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        // The labels are translation keys; LetsCam ships no lang file, so Controls shows them
+        // as written.
+        r.register_key_mapping(
+            mod_api::KeyRegistration::new(KEY_TOGGLE, KEY_TOGGLE_DEFAULT)
+                .label("LetsCam: начать/остановить запись"),
+        );
+        r.register_key_mapping(
+            mod_api::KeyRegistration::new(KEY_MENU, KEY_MENU_DEFAULT)
+                .label("LetsCam: окно записей"),
+        );
+    }
+}
 
 #[cfg(test)]
 mod encode_bench;

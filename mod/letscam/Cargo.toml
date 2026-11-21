@@ -1,15 +1,20 @@
 [package]
+# The crate keeps the engine's name: the mixin helpers and support modules call it as
+# `letscam_engine`, as the old bundle's glue did.
 name = "letscam-engine"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 publish = false
-description = "LetsCam: engine-independent recording, director camera and ffmpeg encoding"
+description = "LetsCam: recording, director camera and ffmpeg encoding, a native Horizon mod"
 
 [lib]
 name = "letscam_engine"
 path = "src/lib.rs"
 
 [dependencies]
+# The pinned SDK's API crate, fetched into .horizon/sdk/ by any `cargo horizon-mod` command.
+# Registry dependencies are pinned by Cargo.lock, written by `horizon-launcher native-lock .`.
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
@@ -19,11 +24,9 @@ png = "0.18"
 log = "0.4"
 parking_lot = "0.12"
 
-# Game audio: WASAPI process loopback of our own process tree.
-# windows/windows-core 0.62.2 are already in Horizon's Cargo.lock; features add no packages.
+# Game audio: WASAPI process loopback of our own process tree (loopback_win.rs, cfg(windows)).
 # windows-core is a direct dependency because #[implement] expands to `::windows_core` paths.
-# Plain [dependencies]: horizon-mixins refuses [target] tables in a bundle crate; the code that
-# uses them is cfg(windows).
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",
