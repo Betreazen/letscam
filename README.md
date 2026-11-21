@@ -68,18 +68,24 @@
 - [ffmpeg](https://ffmpeg.org/download.html#build-windows), например сборка gyan.dev или BtbN. Мод не может нести ffmpeg в себе.
 
 > [!WARNING]
-> Нативные моды Horizon компилируются прямо в игру и работают с вашими правами, без песочницы. Перед установкой прочитайте код. Лаунчер попросит подтвердить, что вы доверяете моду.
+> Нативный мод Horizon лаунчер компилирует у вас на компьютере, и он работает с вашими правами, без песочницы. Перед установкой прочитайте код. Лаунчер попросит подтвердить, что вы доверяете моду.
+
+**Какая версия нужна.** LetsCam 0.2 написан на Mod API Horizon. Лаунчер собирает его против готовой игры той сборки Horizon, к которой он привязан, игру при этом не пересобирает. Сейчас это Nightly 2026-11-21 (`8f83e5c`), сборка указана в `mod/letscam/horizon-mod.toml` (`[native] horizon`). Мод вмешивается во внутренние функции игры, поэтому собирается только на этой сборке; переход на новую выходит новой версией мода. Для старого лаунчера, до слияния Mod API (0.2.69 и раньше), — LetsCam 0.1.2.
 
 **В окне лаунчера:** Mods → **Add from GitHub** → вставьте `https://github.com/Betreazen/letscam` → **Build**.
 
 **Из командной строки:**
 
 ```powershell
+horizon-launcher install nightly-2026-11-21-8f83e5c
+horizon-launcher prepare --version nightly-2026-11-21-8f83e5c
 horizon-launcher mods add-github https://github.com/Betreazen/letscam --trust-native-code
 horizon-launcher native-build --trust-native-code
 ```
 
-Мод только клиентский: серверу он не нужен, играть с ним можно на любом сервере. В сборке [pack-sync](https://github.com/Betreazen/horizon-pack-sync) указывайте его с `"side": "client"`: его крейт под Linux не собирается, и в серверный движок он попадать не должен. Он собирается на коммите Horizon, который закреплён в `mod/letscam/horizon-mixin.toml` (`[compatibility] horizon_revision`). Если другие ваши нативные моды закреплены на другом коммите, лаунчер предложит **Build anyway**.
+Первая сборка скачивает части SDK этой сборки Horizon (около 300 МБ) и Rust лаунчера, это несколько минут. Дальше пересборка занимает от полуминуты до двух минут.
+
+Мод только клиентский: серверу он не нужен, играть с ним можно на любом сервере. В сборке [pack-sync](https://github.com/Betreazen/horizon-pack-sync) указывайте его с `"side": "client"`: в серверный движок он попадать не должен.
 
 Если ffmpeg не лежит в `PATH`, укажите путь к нему в `config/letscam-client.toml` (ключ `ffmpeg`), затем `/letscam reload`.
 
@@ -136,6 +142,9 @@ horizon-launcher native-build --trust-native-code
 
 ### Фазы атак SoulsCraft на листах
 
+> [!NOTE]
+> В версии 0.2 подписей пока нет. В новом Horizon моды обмениваются сообщениями иначе, и подписи вернутся, когда SoulsCraft переедет на Mod API. Ниже описано, как они работали в 0.1.
+
 Если на сервере стоит SoulsCraft, внизу каждого кадра на листе идёт жёлтая строка, например `revenant overhead windup 7`. Строка совпадает с меткой над мобом кадр в кадр.
 
 Названия фаз приходят, только если во время записи был включён `/sc debug on`. Без него строка показывает атаку и тики от её начала, например `overhead +12`. Мобы в покое не подписываются.
@@ -181,7 +190,10 @@ horizon-launcher native-build --trust-native-code
 - **Одна камера.** Живой второй камеры во время игры нет, ролик всегда рендерится после.
 - **Свёрнутое окно.** Во время рендера окно игры лучше не сворачивать: свёрнутое Horizon рисует 10 кадров в секунду (Dynamic FPS — 1), и рендер замедляется, пока окно не развернут. Переключаться на другие окна можно.
 
-Сообщения модов и время суток Horizon теряет в реплеях ([#16039](https://github.com/horizon-rust/horizon/issues/16039), [#16040](https://github.com/horizon-rust/horizon/issues/16040)), LetsCam обходит это сам.
+- **Нет подписей SoulsCraft.** В 0.2 на листах кадров нет фаз атак SoulsCraft, см. выше.
+- **Рендер медленнее.** На новой сборке Horizon кадр рендера идёт ~19–20 мс против ~13 мс раньше: ролик рендерится примерно на треть дольше. Причину ищем.
+
+Пакеты вложений и время суток Horizon теряет в реплеях ([#16039](https://github.com/horizon-rust/horizon/issues/16039), [#16040](https://github.com/horizon-rust/horizon/issues/16040)), LetsCam обходит это сам.
 
 ## Разработка
 
@@ -197,7 +209,7 @@ LetsCam is a client-only native mod for [Horizon](https://github.com/horizon-rus
 
 **More from one recording.** Render it again from other angles (orbit, side, top, shoulder, first person, a keyframed path), in slow motion, with contact sheets frame by frame, or with the camera on a mob.
 
-**Install.** In the launcher choose **Mods → Add from GitHub** and paste this repository's link. You also need ffmpeg. Native mods run unsandboxed with your rights, so read the source first.
+**Install.** LetsCam 0.2 is a native mod on Horizon's mod API, built by the launcher against the prebuilt game of the Horizon build it pins (`[native] horizon` in `mod/letscam/horizon-mod.toml`, currently nightly 2026-11-21, `8f83e5c`); the game is never rebuilt. Install that build, then in the launcher choose **Mods → Add from GitHub** and paste this repository's link. You also need ffmpeg. Native mods run unsandboxed with your rights, so read the source first. For launchers before the mod API (0.2.69 and older) use LetsCam 0.1.2.
 
 ## Лицензия
 

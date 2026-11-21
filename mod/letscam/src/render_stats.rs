@@ -87,6 +87,16 @@ impl LoopStats {
             self.max_drift_ms = drift_ms;
         }
     }
+
+    /// Takes the drift of a frame that should show `expected_ms` while the replay stands at
+    /// `replay_ms`, unless that time lies past the replay's last packet (`replay_end_ms`): a
+    /// replay can't move past its end, and the session it was recorded in runs a little longer,
+    /// so those last frames would read as drift that no timing fault caused.
+    pub fn note_frame(&mut self, replay_ms: i64, expected_ms: i64, replay_end_ms: i64) {
+        if expected_ms <= replay_end_ms {
+            self.note_drift(replay_ms - expected_ms);
+        }
+    }
 }
 
 /// `total` over `n` in milliseconds (0 for none).
@@ -154,6 +164,17 @@ mod tests {
             s.note_drift(d);
         }
         assert_eq!((s.drift_ms, s.max_drift_ms), (1, -7));
+    }
+
+    #[test]
+    fn frames_past_the_replay_end_are_not_drift() {
+        let mut s = LoopStats::default();
+        // A 27 173 ms replay of a 27 249 ms session: the replay stops at its end while the
+        // last frames still ask for later times.
+        for (replay, expected) in [(27_150, 27_150), (27_166, 27_167), (27_173, 27_183), (27_173, 27_200)] {
+            s.note_frame(replay, expected, 27_173);
+        }
+        assert_eq!((s.drift_ms, s.max_drift_ms), (-1, -1));
     }
 
     #[test]

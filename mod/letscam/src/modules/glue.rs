@@ -686,6 +686,11 @@ fn tick_render(game: &mut Game<'_>) {
                 Mode::Rendering(render) => labels::line(game, &render.mobs, game_ms),
                 _ => String::new(),
             });
+            let replay_end_ms = game
+                .replay
+                .driver
+                .as_ref()
+                .map_or(i64::MAX, |driver| i64::from(driver.duration_ms()));
             let pose = {
                 let probe = shot::Probe(game);
                 STATE.with_borrow_mut(|state| match &mut state.mode {
@@ -696,7 +701,7 @@ fn tick_render(game: &mut Game<'_>) {
                         render.focus_id = locked;
                         render.job.label_next(&label);
                         let expected = render.job.next_frame_ms().round() as i64;
-                        render.loop_stats.note_drift(i64::from(game_ms) - expected);
+                        render.loop_stats.note_frame(i64::from(game_ms), expected, replay_end_ms);
                         let pose = render.job.next_pose_focus(&probe, focus).map(|p| keyed_pose(render, game_ms, p));
                         render.loop_stats.focus += pose_start - focus_start;
                         render.loop_stats.pose += pose_start.elapsed();
