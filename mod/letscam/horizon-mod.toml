@@ -147,6 +147,34 @@ bindings = [
   { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
 ]
 
+# SoulsCraft's mob state (`soulscraft:state`) for the contact sheets' attack labels. Mod payloads
+# go through the payload transport to the client mod that declared the channel, never through the
+# studio recorder, so LetsCam writes them into the recording as they arrive, where the session's
+# new events join the frame's backlog. An OVERWRITE that repeats the function's few lines: a HEAD
+# on `receive_client_payload` fails to build (the launcher re-exports its module's `const _`),
+# and RETURN here is refused for the body's `matches!`.
+[[native.mixin]]
+id = "payload_recorded"
+target = "horizon_client::game::remote::raw_ingress::Remote::receive_credited_backlog"
+kind = "OVERWRITE"
+helper = "src/mixins/payload_recorded.rs"
+bindings = [
+  { name = "remote", ty = "&mut Remote", value = "&mut *self" },
+  { name = "events", ty = "&mut std::collections::VecDeque<Received>", value = "&mut *events" },
+]
+
+# ...and reads them back as the replay plays them: a recorded custom payload reaches
+# `apply_packet`, where no mod handles it.
+[[native.mixin]]
+id = "replay_payload"
+target = "horizon_client::game::remote::Game<'_>::apply_packet"
+kind = "HEAD"
+helper = "src/mixins/replay_payload.rs"
+bindings = [
+  { name = "game", ty = "&mut Game<'_>", value = "&mut *self" },
+  { name = "packet", ty = "&horizon_protocol::packets::play::Clientbound", value = "&packet" },
+]
+
 # Attachment sync payloads are recorded into the studio replay, which drops custom payloads.
 [[native.mixin]]
 id = "attachment_sync_recorded"

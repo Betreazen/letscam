@@ -955,10 +955,38 @@ pub fn record_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
     remote.session.record_clientbound(&packet);
 }
 
-// TODO(mod-api): SoulsCraft's `soulscraft:state` messages came through `horizon_protocol::mod_net`,
-// recorded here and fed back while rendering (`replay_payload`, the `mod_net_recorded` mixin).
-// That transport is gone (mod payloads now use the raw payload transport), so nothing fills
-// `Render::mobs` and the sheets' mob line stays empty until it is recorded from the new one.
+/// A mod payload the server just sent through the payload transport, on its way to the client
+/// mod that declared its channel (horizon-mod.toml, `payload_recorded`). The studio never sees
+/// these, so while LetsCam records, SoulsCraft's mob state comes back as the custom payload
+/// packet it would have been, for the session to write into the recording (the sheets' labels).
+pub fn live_payload(
+    channel: &str,
+    data: &[u8],
+) -> Option<horizon_protocol::packets::play::Clientbound> {
+    if channel != engine::mob_labels::STATE_CHANNEL || !is_recording() {
+        return None;
+    }
+    Some(horizon_protocol::packets::play::Clientbound::CustomPayload(
+        horizon_protocol::packets::configuration::CustomPayload {
+            channel: channel.to_owned(),
+            data: data.to_vec(),
+        },
+    ))
+}
+
+/// A packet the replay being rendered just played back (horizon-mod.toml, `replay_payload`):
+/// SoulsCraft's mob state recorded by `live_payload` goes into the sheets' labels.
+pub fn replay_payload(game: &Game<'_>, channel: &str, data: &[u8]) {
+    if channel != engine::mob_labels::STATE_CHANNEL || game.replay.driver.is_none() {
+        return;
+    }
+    let at_ms = replay_ms(game);
+    STATE.with_borrow_mut(|state| {
+        if let Mode::Rendering(render) = &mut state.mode {
+            labels::take_payload(data, at_ms, &mut render.mobs);
+        }
+    });
+}
 
 /// The studio recorder stops on its own when its queue overflows or its file write fails, and
 /// says so only in its status: checked every frame while recording, told once in chat with the
