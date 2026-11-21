@@ -195,7 +195,7 @@ pub fn start_recording(game: &mut Game<'_>) {
             recorder_stopped: false,
         }));
     });
-    let key = bound_key(game, engine::KEY_TOGGLE, engine::KEY_TOGGLE_DEFAULT);
+    let key = key_label(&bound_key(game, engine::KEY_TOGGLE, engine::KEY_TOGGLE_DEFAULT));
     say(
         game,
         format!("Запись началась: {}. Остановить: {key} или /letscam stop", dir.display()),
@@ -856,6 +856,11 @@ pub fn on_key(game: &mut Game<'_>, key: &str, pressed: bool) {
 /// hook gets the bare key, and both defaults have none.
 fn bound_key(game: &Game<'_>, name: &str, default: &str) -> String {
     game.mod_key(ID, name).map_or_else(|| default.to_owned(), |(key, _)| key)
+}
+
+/// A key's name for the chat: `key.keyboard.f9` → `F9`, `key.mouse.4` → `MOUSE.4`.
+fn key_label(key: &str) -> String {
+    key.strip_prefix("key.keyboard.").or_else(|| key.strip_prefix("key.")).unwrap_or(key).to_uppercase()
 }
 
 /// A click in the window, carried out here where the game is writable.

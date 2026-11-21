@@ -128,7 +128,8 @@ function Start-LcBot([int]$Width = 1920, [int]$Height = 1080) {
 # Owner's rule: bots make no sound on the PC's speakers; master volume 0 before every launch.
 function Set-BotSilent([string]$PlayerDir) {
     $options = Join-Path $PlayerDir 'options.txt'
-    $lines = if (Test-Path $options) { @(Get-Content $options | Where-Object { $_ -notmatch '^(soundCategory_master|tutorialStep):' }) } else { @() }
+    # @(…) around the whole `if`: a bare `else { @() }` gives $null, and `$null + 'a' + 'b'` joins them into one line.
+    $lines = @(if (Test-Path $options) { Get-Content $options | Where-Object { $_ -notmatch '^(soundCategory_master|tutorialStep):' } })
     Set-Content -Encoding utf8 $options ($lines + 'soundCategory_master:0.0' + 'tutorialStep:none')
 }
 
@@ -145,6 +146,17 @@ function Set-TestConfig {
     New-Item -ItemType Directory -Force (Split-Path $ConfigFile) | Out-Null
     $tomlRoot = $OutputRoot -replace '\\', '/'
     Set-Content -Encoding utf8 $ConfigFile "record_mic = false`nkeep_sources = true`noutput_dir = `"$tomlRoot`"`n"
+}
+
+# LetsCam's keys rebound as Controls saves them (`key.<mod>.<name>:` lines in horizon-mods.txt):
+# horizon-ctl's `key` presses F1-F6 and F11 only, not the default F9 and F10. With --player-dir
+# the game keeps horizon-mods.txt in the game folder, not beside the player's options.txt.
+$TestToggleKey = 'f6'
+$TestMenuKey = 'f4'
+function Set-TestKeys([string]$Dir) {
+    $file = Join-Path $Dir 'horizon-mods.txt'
+    $lines = @(if (Test-Path $file) { Get-Content $file | Where-Object { $_ -notmatch '^key\.letscam\.' } })
+    Set-Content -Encoding utf8 $file ($lines + "key.letscam.toggle:key.keyboard.$TestToggleKey" + "key.letscam.menu:key.keyboard.$TestMenuKey")
 }
 
 function Wait-Message($Bot, [string[]]$Patterns, [int]$TimeoutSec) {
@@ -182,6 +194,9 @@ function Get-NewRecording([datetime]$Since) {
 
 $AngleList = @($Angles -split '\+' | Where-Object { $_ })
 Set-TestConfig
+New-Item -ItemType Directory -Force $GameDir | Out-Null
+Remove-Item -LiteralPath (Join-Path $Scratch 'horizon-mods.txt') -Force -ErrorAction SilentlyContinue
+Set-TestKeys $GameDir
 $recordLog = Join-Path $Scratch 'lc_a-record.log'
 Remove-Item -LiteralPath $recordLog -Force -ErrorAction SilentlyContinue
 
@@ -241,7 +256,7 @@ try {
     Invoke-Bot $bot 'look -90 0' | Out-Null
     Invoke-Bot $bot 'move forward 1.5' 30 | Write-Host
     Start-Sleep -Seconds 9
-    # Stopped with the command: horizon-ctl's `key` knows F1-F6 and F11 only, not LetsCam's F9.
+    # Stopped with the command; the keys have their own short recording after the renders.
     Invoke-Bot $bot 'chat /letscam stop' | Out-Null
     $script:stopLine = Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30
     Write-Host $stopLine
@@ -270,12 +285,36 @@ try {
         $bot = Start-LcBot 1920 1080
         $renderAngles = "$Angles+keys"
         $script:AngleList += 'keys'
+
+        # The rebound keys (Set-TestKeys) on the fresh bot, whose log has no window or recording
+        # lines yet: F4 opens the window, F6 makes a short recording of its own. That one is
+        # deleted before the render, which takes the newest recording.
+        $script:mainDir = Get-NewRecording $started
+        Invoke-Bot $bot "key $TestMenuKey tap" | Out-Null
+        $script:menuKeyLine = Wait-Message $bot @('letscam: window open[^\n]*', 'открывается только[^\n]*') 20
+        Write-Host $menuKeyLine
+        Invoke-Bot $bot 'key esc tap' | Out-Null
+        Start-Sleep -Seconds 1
+        Invoke-Bot $bot "key $TestToggleKey tap" | Out-Null
+        $script:keyStartLine = Wait-Message $bot @('Запись началась[^\n]*', 'не начал[^\n]*') 20
+        Write-Host $keyStartLine
+        Start-Sleep -Seconds 4
+        Invoke-Bot $bot "key $TestToggleKey tap" | Out-Null
+        $script:keyStopLine = Wait-Message $bot @('Запись сохранена[^\n]*', 'остановлена с ошибкой[^\n]*') 30
+        Write-Host $keyStopLine
+        Start-Sleep -Seconds 2
+        $keyDir = Get-NewRecording $started
+        if ($keyDir -and $mainDir -and $keyDir.FullName -ne $mainDir.FullName) {
+            Remove-Item -LiteralPath $keyDir.FullName -Recurse -Force
+            Write-Host "key test recording deleted: $($keyDir.Name)"
+        }
     }
 
     Invoke-Bot $bot "chat /letscam render $renderAngles sheet" | Out-Null
     $done = Wait-Renders $bot $AngleList.Count ($RenderTimeoutSec * $AngleList.Count)
     Write-Host $done
     Invoke-Bot $bot "screenshot $(Join-Path $Scratch 'after-render.png')" | Out-Null
+    if (-not $mainDir) { $script:mainDir = Get-NewRecording $started }
 } finally {
     $finalLog = if ($bot) { [IO.Path]::ChangeExtension($bot.Socket, 'log') } else { $null }
     Stop-LcBot $bot
@@ -285,7 +324,8 @@ try {
 
 $renderLog = Join-Path $Scratch 'lc_a-render.log'
 if ($done -like 'FAIL:*') { throw "render failed: $done" }
-$dir = Get-NewRecording $started
+$dir = $mainDir
+if (-not $dir) { throw "no recording in $OutputRoot since $started" }
 $stem = "letscam_$($dir.Name)"
 $video = Get-ChildItem $dir.FullName -File | Where-Object { $_.BaseName -eq $stem } | Select-Object -First 1
 if (-not $video) { throw "no $stem video in $($dir.FullName)" }
@@ -318,6 +358,10 @@ $checks['command stops recording'] = [bool]($stopLine -match 'Запись со�
 if (-not $NoKeys) {
     $checks['key editor saved 3 keys'] = [bool]($keysLine -match 'closed, 3 keyframes')
     $checks['render follows 3 keys'] = [bool](Select-String -Path $renderLog -Pattern 'keys path with 3 keyframes' -Quiet)
+    $checks["menu key $TestMenuKey opens window"] = [bool]($menuKeyLine -match 'window open')
+    $checks["key $TestToggleKey starts recording"] = [bool]($keyStartLine -match "Запись началась.*Остановить: $($TestToggleKey.ToUpper()) ")
+    $checks["key $TestToggleKey stops recording"] = [bool]($keyStopLine -match 'Запись сохранена')
+
 }
 Select-String -Path $renderLog -Pattern 'letscam: render (stats|loop): [^"]*' | ForEach-Object { Write-Host $_.Matches[0].Value }
 $drifts = @(Select-String -Path $renderLog -Pattern 'replay drift -?\d+ ms \(max (-?\d+)\)' |

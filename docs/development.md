@@ -26,7 +26,7 @@
 | `edit.rs` | редактор ключевых кадров |
 | `world.rs` | время суток и реестры для реплея |
 | `shot.rs` | фокус и поза камеры рендера |
-| `labels.rs` | фазы атак SoulsCraft для листов (сейчас без данных, см. ниже) |
+| `labels.rs` | фазы атак SoulsCraft для листов |
 | `diag.rs` | диагностика синхронизации модели игрока в логе |
 
 Миксины и точки игры, в которые они встают:
@@ -41,6 +41,8 @@
 | `hud` | `native_hooks::render_gui_post` | значок REC |
 | `screen_render_post` | `game::screen_backgrounds::draw_screen_with_post_hook` | окно записей рисуется здесь: `native_screen_render_post` зовётся, только если мод подписан на хук через трейт |
 | `screen_mouse_button_pressed_pre` | `native_hooks::base` | клики в окне записей |
+| `payload_recorded` | OVERWRITE `game::remote::raw_ingress::Remote::receive_credited_backlog` | сообщения `soulscraft:state` пишутся в реплей, пока идёт запись: рекордер студии их не видит |
+| `replay_payload` | `game::remote::apply_packet` | при рендере записанные `soulscraft:state` идут в подписи листов |
 | `attachment_sync_recorded` | `game::attachment_sync::remote_attachment_sync` | пакеты вложений пишутся в реплей сами, рекордер студии их теряет |
 
 Клавиши F9 и F10 регистрирует сам крейт (`Hooks::register` в `lib.rs`), их можно переназначить в «Управлении».
@@ -123,7 +125,7 @@ pwsh -File tools\bench-test.ps1
 
 Дрейф считается только по кадрам до конца реплея. Реплей кончается своим последним пакетом, обычно на десятки миллисекунд раньше сессии записи. Последние кадры ролика смотрят за этот конец, и раньше их ошибочно считали дрейфом.
 
-`horizon-ctl` не умеет нажимать F9, поэтому бот останавливает запись командой `/letscam stop`.
+`horizon-ctl` нажимает только F1–F6 и F11, а не F9 и F10. Поэтому стенд переназначает клавиши LetsCam так, как это сохраняет «Управление» (строки `key.letscam.toggle:` и `key.letscam.menu:` в `horizon-mods.txt` рядом с `options.txt`), на F6 и F4. После рендера бот открывает окно по F4 и делает короткую запись по F6. Основную запись он останавливает командой `/letscam stop`.
 
 `tools/capsule-scene.ps1`, `tools/sync-check.ps1` и `tools/lib.ps1` — сценарии старого общего стенда `horizon-joint-dev` (Horizon 7e4e421, версии 0.1.x). Капсуле нужен RustCraft на сервере. Она вернётся, когда RustCraft переедет на Mod API.
 
@@ -135,5 +137,6 @@ pwsh -File tools\bench-test.ps1
 | отдельные реплеи теряют время суток ([#16040](https://github.com/horizon-rust/horizon/issues/16040)) | сохраняет его в `world_time.json` |
 | очередь рекордера на 2048 пакетов переполняется, если диск встаёт, и запись обрывается ([#16041](https://github.com/horizon-rust/horizon/issues/16041)) | сразу пишет об этом в чат |
 | модель своего игрока забегает вперёд в клетке открытой двери ([#16527](https://github.com/horizon-rust/horizon/issues/16527)) | открыто |
-| `horizon_protocol::mod_net` удалён: сообщения модов идут через сырой транспорт | подписей фаз SoulsCraft на листах пока нет (`TODO(mod-api)` в `glue.rs` и `labels.rs`); их вернут вместе с переносом SoulsCraft на Mod API |
+| сообщения модов идут мимо рекордера студии | `payload_recorded` пишет `soulscraft:state` в реплей сам; в игре подписи проверят, когда SoulsCraft выйдет на Mod API |
+| миксин на `receive_client_payload` не собирается: генератор патча экспортирует `const _` модуля ([#19505](https://github.com/horizon-rust/horizon/issues/19505)) | OVERWRITE `receive_credited_backlog` повторяет её строки на 8f83e5c; при переходе на новую сборку их надо сверить |
 | кадр в рендере на Nightly 8f83e5c ~19–20 мс против ~13 мс на 7e4e421 | причина не найдена |
