@@ -7,10 +7,6 @@ fn letscam_save_screenshot(
     };
     let image = pending.image_mut();
     let size = [image.width, image.height];
-    let pixels = ::std::mem::take(&mut image.rgba)
-        .chunks_exact(4)
-        .map(|p| [p[0], p[1], p[2], p[3]])
-        .collect();
-    letscam_engine::bridge::put(tag, size, false, pixels);
+    letscam_engine::bridge::put(tag, size, false, ::std::mem::take(&mut image.rgba));
     core::ops::ControlFlow::Break(Some(Ok(size)))
 }

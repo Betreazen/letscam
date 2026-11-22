@@ -99,14 +99,14 @@ fn renders_session_with_pip_and_cleans_up() {
         if frames == 0 {
             assert_eq!(pose, first, "peek must match the real first pose");
         }
-        job.submit_frame(W, H, vec![GRAY; (W * H) as usize], true)
+        job.submit_frame(W, H, vec![GRAY; (W * H) as usize].into_flattened(), true)
             .expect("submit");
         frames += 1;
     }
     assert_eq!(frames, 120);
     assert!((job.progress() - 1.0).abs() < 1e-6);
     assert!(
-        job.submit_frame(W, H, vec![GRAY; (W * H) as usize], true)
+        job.submit_frame(W, H, vec![GRAY; (W * H) as usize].into_flattened(), true)
             .is_err()
     );
     let out = job.finish().expect("finish");
@@ -142,12 +142,15 @@ fn rejects_wrong_sizes_and_empty_sessions() {
         ..Config::default()
     };
     let mut job = RenderJob::open(&dir, &cfg).expect("open");
-    assert!(job.submit_frame(4, 4, vec![GRAY; 3], false).is_err());
+    assert!(
+        job.submit_frame(4, 4, vec![GRAY; 3].into_flattened(), false)
+            .is_err()
+    );
     if tool("ffmpeg").is_some() {
-        job.submit_frame(64, 64, vec![GRAY; 64 * 64], false)
+        job.submit_frame(64, 64, vec![GRAY; 64 * 64].into_flattened(), false)
             .expect("first");
         assert!(
-            job.submit_frame(32, 32, vec![GRAY; 32 * 32], false)
+            job.submit_frame(32, 32, vec![GRAY; 32 * 32].into_flattened(), false)
                 .is_err()
         );
     }
@@ -191,7 +194,7 @@ fn stats_account_for_submitted_frames() {
         return;
     }
     for _ in 0..30 {
-        job.submit_frame(w, h, vec![GRAY; (w * h) as usize], true)
+        job.submit_frame(w, h, vec![GRAY; (w * h) as usize].into_flattened(), true)
             .expect("submit");
     }
     let s = job.stats();
@@ -200,9 +203,49 @@ fn stats_account_for_submitted_frames() {
     assert!(s.submit >= s.queue_wait, "{s:?}");
     assert!(s.pipe_write > Duration::ZERO, "{s:?}");
     assert!(s.to_string().starts_with("30 frames in "), "{s}");
-    assert!(job.submit_frame(4, 4, vec![GRAY; 3], true).is_err());
+    assert!(
+        job.submit_frame(4, 4, vec![GRAY; 3].into_flattened(), true)
+            .is_err()
+    );
     assert_eq!(job.stats().frames, 30, "failed submits are not counted");
     job.cancel();
+}
+
+#[test]
+fn a_prepared_ffmpeg_takes_the_frames_of_its_size() {
+    if tool("ffmpeg").is_none() {
+        return;
+    }
+    let tmp = TempDir::new("render-prepared");
+    let dir = tmp.path().join("rec");
+    make_session(&dir);
+    let cfg = Config {
+        hardware: false,
+        codec: crate::config::Codec::H264,
+        ..Config::default()
+    };
+    let mut job = RenderJob::open(&dir, &cfg).expect("open");
+    job.prepare_encoder(64, 64, false);
+    for _ in 0..job.total_frames() {
+        job.submit_frame(64, 64, vec![GRAY; 64 * 64].into_flattened(), false)
+            .expect("submit");
+    }
+    let video = job.finish().expect("finish");
+    assert!(video.is_file());
+
+    // A prepared ffmpeg of another size is stopped and its file goes; the frame starts its own.
+    let mut job = RenderJob::open(&dir, &cfg).expect("open again");
+    job.prepare_encoder(32, 32, false);
+    job.submit_frame(64, 64, vec![GRAY; 64 * 64].into_flattened(), false)
+        .expect("other size");
+    job.cancel();
+    assert!(!video.exists(), "the cancelled render leaves no video");
+
+    // Cancelled before any frame: the prepared ffmpeg leaves nothing behind either.
+    let mut job = RenderJob::open(&dir, &cfg).expect("open a third time");
+    job.prepare_encoder(64, 64, false);
+    job.cancel();
+    assert!(!video.exists());
 }
 
 #[test]
@@ -228,7 +271,7 @@ fn labels_hold_from_the_frame_they_were_set_on() {
     job.label_next("revenant overhead +2");
     assert_eq!(job.labels(), &[(0, "revenant overhead +2".to_owned())]);
     if tool("ffmpeg").is_some() {
-        job.submit_frame(64, 64, vec![GRAY; 64 * 64], false)
+        job.submit_frame(64, 64, vec![GRAY; 64 * 64].into_flattened(), false)
             .expect("frame");
         job.label_next("revenant overhead +2");
         job.label_next("");

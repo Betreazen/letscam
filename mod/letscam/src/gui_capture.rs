@@ -15,7 +15,8 @@ pub(crate) struct GuiJob {
     pub file: String,
     pub width: u32,
     pub height: u32,
-    pub pixels: Vec<[u8; 4]>,
+    /// 4 bytes a pixel, rows packed.
+    pub pixels: Vec<u8>,
     pub bgra: bool,
 }
 
@@ -25,8 +26,13 @@ pub(crate) struct GuiWriter {
 }
 
 fn write_job(job: GuiJob) -> Result<(), String> {
-    let img = downscale2(job.width, job.height, &job.pixels, job.bgra)
-        .ok_or_else(|| format!("кадр интерфейса {}x{} не подходит", job.width, job.height))?;
+    let img = downscale2(
+        job.width,
+        job.height,
+        job.pixels.as_chunks::<4>().0,
+        job.bgra,
+    )
+    .ok_or_else(|| format!("кадр интерфейса {}x{} не подходит", job.width, job.height))?;
     save_png(&job.path, &img)
 }
 
@@ -92,7 +98,7 @@ mod tests {
             file: "gui/000001.png".into(),
             width: 8,
             height: 6,
-            pixels: vec![[10, 20, 30, 255]; 48],
+            pixels: vec![[10, 20, 30, 255]; 48].into_flattened(),
             bgra: false,
         };
         let bad = GuiJob {
@@ -100,7 +106,7 @@ mod tests {
             file: "gui/000002.png".into(),
             width: 8,
             height: 6,
-            pixels: vec![[0; 4]; 3],
+            pixels: vec![[0; 4]; 3].into_flattened(),
             bgra: false,
         };
         assert!(w.submit(ok));

@@ -136,13 +136,13 @@ impl Recording {
         now: Instant,
         width: u32,
         height: u32,
-        pixels: Vec<[u8; 4]>,
+        pixels: Vec<u8>,
         bgra: bool,
     ) {
         self.last_gui = Some(now);
-        if pixels.len() != width as usize * height as usize {
+        if pixels.len() != width as usize * height as usize * 4 {
             log::warn!(
-                "LetsCam: кадр интерфейса {width}x{height} с {} пикселями пропущен",
+                "LetsCam: кадр интерфейса {width}x{height} в {} байт пропущен",
                 pixels.len()
             );
             return;
@@ -236,10 +236,10 @@ mod tests {
         assert!(rec.gui_frame_due(now));
         rec.gui_event(now, true);
         rec.gui_event(now, true);
-        rec.push_gui_frame(now, 8, 8, vec![[1, 2, 3, 255]; 64], true);
+        rec.push_gui_frame(now, 8, 8, vec![[1, 2, 3, 255]; 64].into_flattened(), true);
         assert!(!rec.gui_frame_due(now + Duration::from_millis(100)));
         assert!(rec.gui_frame_due(now + Duration::from_millis(250)));
-        rec.push_gui_frame(now, 8, 8, vec![[0; 4]; 3], false);
+        rec.push_gui_frame(now, 8, 8, vec![[0; 4]; 3].into_flattened(), false);
         std::thread::sleep(Duration::from_millis(400));
         let stop = Instant::now();
         rec.gui_event(stop, false);

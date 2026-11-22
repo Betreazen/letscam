@@ -137,8 +137,13 @@ fn slow_motion_render_with_contact_sheet() {
             _ => {}
         }
         let shade = (n * 2 % 255) as u8;
-        job.submit_frame(W, H, vec![[shade, 80, 160, 255]; (W * H) as usize], true)
-            .expect("submit");
+        job.submit_frame(
+            W,
+            H,
+            vec![[shade, 80, 160, 255]; (W * H) as usize].into_flattened(),
+            true,
+        )
+        .expect("submit");
         n += 1;
     }
     assert_eq!(n, 120);

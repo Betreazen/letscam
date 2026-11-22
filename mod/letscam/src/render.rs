@@ -2,13 +2,14 @@
 //! hands the pixels back; the job composes the GUI picture-in-picture and feeds ffmpeg.
 
 use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::director::{CameraPose, Director, Focus, WorldProbe};
 use crate::encode::AudioInput;
 use crate::encoder::{Encoder, probe_hardware};
-use crate::pip::{Image, compose, load_png};
+use crate::pip::{PipLayer, load_png};
 use crate::recording::GUI_DIR;
 use crate::render_options::{MAX_SPEED, MIN_SPEED, RenderOptions};
 use crate::render_stats::RenderStats;
@@ -17,6 +18,11 @@ use crate::sheet::make_sheets;
 
 /// PiP width as a share of the frame width (spec: about 45 %).
 const PIP_SCALE: f32 = 0.45;
+
+/// A frame's width, height and whether it is BGRA.
+type FrameSize = (u32, u32, bool);
+/// ffmpeg being started on a thread.
+type Starting = JoinHandle<Result<Encoder, String>>;
 
 pub struct RenderJob {
     dir: PathBuf,
@@ -31,11 +37,17 @@ pub struct RenderJob {
     posed: u64,
     submitted: u64,
     encoder: Option<Encoder>,
+    /// ffmpeg being started on a thread for frames of this size (`prepare_encoder`).
+    pending: Option<(FrameSize, Starting)>,
     size: (u32, u32, bool),
-    gui_cache: Option<(String, Option<Image>)>,
+    /// The GUI snapshot on screen and its picture-in-picture for this render's frame size.
+    gui_cache: Option<(String, Option<PipLayer>)>,
     /// Entry into the first successful `submit_frame` and exit from the latest one.
     submit_span: Option<(Instant, Instant)>,
     submit_time: Duration,
+    /// Parts of submit_time: the GUI picture-in-picture, and starting ffmpeg on the first frame.
+    pip_time: Duration,
+    start_time: Duration,
     /// Sheet labels: `(video frame, text)` from that frame on.
     labels: Vec<(u64, String)>,
 }
@@ -143,10 +155,13 @@ impl RenderJob {
             posed: 0,
             submitted: 0,
             encoder: None,
+            pending: None,
             size: (0, 0, false),
             gui_cache: None,
             submit_span: None,
             submit_time: Duration::ZERO,
+            pip_time: Duration::ZERO,
+            start_time: Duration::ZERO,
             labels: Vec::new(),
         })
     }
@@ -229,30 +244,81 @@ impl RenderJob {
         (self.total_frames > 0).then(|| self.fresh.peek_pose(0.0))
     }
 
-    /// The GUI snapshot to show at `t_ms`, if a screen is open then.
-    fn gui_overlay(&mut self, t_ms: f64) -> Option<&Image> {
+    /// Starts ffmpeg on a thread for frames of `width`×`height`, so the first frame finds it
+    /// running: spawning ffmpeg (a 200 MB executable) takes over a second, which froze the game
+    /// at the start of every render. The glue calls it at the render's start, before its warm-up
+    /// frames; a first frame of another size starts ffmpeg itself, as without this.
+    pub fn prepare_encoder(&mut self, width: u32, height: u32, bgra: bool) {
+        if self.encoder.is_some() || self.pending.is_some() || width == 0 || height == 0 {
+            return;
+        }
+        let (cfg, out, audio) = (self.cfg.clone(), self.out.clone(), self.audio.clone());
+        let duration = self.total_frames as f64 / f64::from(self.cfg.fps);
+        let spawned = std::thread::Builder::new()
+            .name("letscam-ffmpeg-start".into())
+            .spawn(move || {
+                Encoder::start_with_duration(
+                    &cfg,
+                    &out,
+                    width,
+                    height,
+                    bgra,
+                    &audio,
+                    Some(duration),
+                )
+            });
+        match spawned {
+            Ok(handle) => self.pending = Some(((width, height, bgra), handle)),
+            Err(e) => log::warn!("LetsCam: ffmpeg заранее не запущен: {e}"),
+        }
+    }
+
+    /// The encoder `prepare_encoder` started, waited for; a prepared one of another size is
+    /// stopped and its file removed, and None returned.
+    fn take_prepared(&mut self, size: FrameSize) -> Option<Result<Encoder, String>> {
+        let (prepared, handle) = self.pending.take()?;
+        let started = handle
+            .join()
+            .unwrap_or_else(|_| Err("поток запуска ffmpeg упал".into()));
+        if prepared == size {
+            return Some(started);
+        }
+        if let Ok(enc) = started {
+            enc.cancel();
+        }
+        None
+    }
+
+    /// The picture-in-picture of the GUI snapshot to show at `t_ms` on a `width`×`height`
+    /// frame, if a screen is open then. Made once per snapshot (`PipLayer`).
+    fn gui_layer(&mut self, t_ms: f64, width: u32, height: u32, bgra: bool) -> Option<&PipLayer> {
         if !Session::gui_open_at(&self.session.gui_events, t_ms) {
             return None;
         }
         let frames = &self.session.gui_frames;
         let idx = frames.partition_point(|f| f64::from(f.t_ms) <= t_ms);
         let file = &frames.get(idx.checked_sub(1)?)?.file;
-        if self.gui_cache.as_ref().is_none_or(|(f, _)| f != file) {
-            let img = load_png(&self.dir.join(file))
+        let stale = self.gui_cache.as_ref().is_none_or(|(f, layer)| {
+            f != file || layer.as_ref().is_some_and(|l| !l.fits(width, height))
+        });
+        if stale {
+            let margin = (height / 40).max(4);
+            let layer = load_png(&self.dir.join(file))
                 .map_err(|e| log::warn!("LetsCam: кадр интерфейса: {e}"))
-                .ok();
-            self.gui_cache = Some((file.clone(), img));
+                .ok()
+                .and_then(|img| PipLayer::new(width, height, bgra, &img, PIP_SCALE, margin));
+            self.gui_cache = Some((file.clone(), layer));
         }
         self.gui_cache.as_ref()?.1.as_ref()
     }
 
-    /// Takes the drawn frame (4 bytes per pixel), adds the GUI PiP and sends it to ffmpeg.
-    /// The first frame starts ffmpeg with its size and pixel format.
+    /// Takes the drawn frame (4 bytes per pixel, rows packed), adds the GUI PiP and sends it to
+    /// ffmpeg. The first frame starts ffmpeg with its size and pixel format.
     pub fn submit_frame(
         &mut self,
         width: u32,
         height: u32,
-        pixels: Vec<[u8; 4]>,
+        pixels: Vec<u8>,
         bgra: bool,
     ) -> Result<(), String> {
         let start = Instant::now();
@@ -271,6 +337,8 @@ impl RenderJob {
             frames: self.submitted,
             wall: self.submit_span.map_or(Duration::ZERO, |(a, b)| b - a),
             submit: self.submit_time,
+            pip: self.pip_time,
+            start: self.start_time,
             queue_wait: enc.map_or(Duration::ZERO, Encoder::queue_wait),
             pipe_write: enc.map_or(Duration::ZERO, Encoder::pipe_write),
         }
@@ -280,28 +348,35 @@ impl RenderJob {
         &mut self,
         width: u32,
         height: u32,
-        pixels: Vec<[u8; 4]>,
+        mut bytes: Vec<u8>,
         bgra: bool,
     ) -> Result<(), String> {
         if self.submitted >= self.total_frames {
             return Err("все кадры уже отрендерены".into());
         }
-        if pixels.len() != width as usize * height as usize {
-            return Err(format!("кадр {width}x{height}: {} пикселей", pixels.len()));
+        if bytes.len() != width as usize * height as usize * 4 {
+            return Err(format!("кадр {width}x{height}: {} байт", bytes.len()));
         }
         if self.encoder.is_none() {
-            let duration = self.total_frames as f64 / f64::from(self.cfg.fps);
-            let enc = Encoder::start_with_duration(
-                &self.cfg,
-                &self.out,
-                width,
-                height,
-                bgra,
-                &self.audio,
-                Some(duration),
-            )?;
+            let start = Instant::now();
+            let enc = match self.take_prepared((width, height, bgra)) {
+                Some(started) => started?,
+                None => {
+                    let duration = self.total_frames as f64 / f64::from(self.cfg.fps);
+                    Encoder::start_with_duration(
+                        &self.cfg,
+                        &self.out,
+                        width,
+                        height,
+                        bgra,
+                        &self.audio,
+                        Some(duration),
+                    )?
+                }
+            };
             self.encoder = Some(enc);
             self.size = (width, height, bgra);
+            self.start_time += start.elapsed();
         } else if self.size != (width, height, bgra) {
             return Err(format!(
                 "размер окна изменился во время рендера ({}x{} → {width}x{height})",
@@ -309,11 +384,11 @@ impl RenderJob {
             ));
         }
         let t = self.submitted as f64 * self.replay_step_ms();
-        let mut bytes = pixels.into_flattened();
-        let margin = (height / 40).max(4);
-        if let Some(img) = self.gui_overlay(t) {
-            compose(&mut bytes, width, height, bgra, img, PIP_SCALE, margin);
+        let pip = Instant::now();
+        if let Some(layer) = self.gui_layer(t, width, height, bgra) {
+            layer.apply(&mut bytes);
         }
+        self.pip_time += pip.elapsed();
         let enc = self.encoder.as_mut().ok_or("кодировщик не запущен")?;
         enc.push_frame(bytes)?;
         self.submitted += 1;
@@ -333,6 +408,7 @@ impl RenderJob {
     /// without `keep_sources` deletes the WAVs and GUI snapshots.
     pub fn finish_with_sheets(mut self) -> Result<(PathBuf, Vec<PathBuf>), String> {
         log::info!("LetsCam: {}", self.stats());
+        self.drop_prepared();
         let enc = self
             .encoder
             .take()
@@ -365,7 +441,17 @@ impl RenderJob {
 
     /// Stops ffmpeg and removes the partial video.
     pub fn cancel(mut self) {
+        self.drop_prepared();
         if let Some(enc) = self.encoder.take() {
+            enc.cancel();
+        }
+    }
+
+    /// Stops an ffmpeg `prepare_encoder` started that no frame took.
+    fn drop_prepared(&mut self) {
+        if let Some((_, handle)) = self.pending.take()
+            && let Ok(Ok(enc)) = handle.join()
+        {
             enc.cancel();
         }
     }

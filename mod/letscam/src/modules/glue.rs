@@ -448,7 +448,7 @@ fn start_job(game: &mut Game<'_>, config: &engine::Config, dir: PathBuf, words: 
         }
     };
     let focus = options.focus.as_deref().map(FocusSpec::parse);
-    let job = match engine::RenderJob::open_with(&dir, config, options) {
+    let mut job = match engine::RenderJob::open_with(&dir, config, options) {
         Ok(job) => job,
         Err(error) => {
             say(game, format!("Рендер не начался: {error}"));
@@ -456,6 +456,11 @@ fn start_job(game: &mut Game<'_>, config: &engine::Config, dir: PathBuf, words: 
             return;
         }
     };
+    // ffmpeg starts while the world closes and the replay warms up: the captures come at the
+    // window's size, RGBA (`save_screenshot` mixin).
+    if let Some(renderer) = game.renderer.as_ref() {
+        job.prepare_encoder(renderer.config.width, renderer.config.height, false);
+    }
     say(
         game,
         format!(

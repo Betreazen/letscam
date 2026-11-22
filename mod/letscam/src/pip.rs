@@ -169,73 +169,178 @@ pub fn compose(
     scale_of_width: f32,
     margin_px: u32,
 ) {
-    let (fw, fh) = (i64::from(frame_w), i64::from(frame_h));
-    if !overlay.is_valid() || frame.len() < (fw * fh * 4) as usize || fw < 8 || fh < 8 {
+    if frame.len() < frame_w as usize * frame_h as usize * 4 {
         log::warn!("LetsCam: картинка в картинке пропущена (неверные размеры)");
         return;
     }
-    let margin = i64::from(margin_px);
-    let scale = if scale_of_width.is_finite() {
-        scale_of_width.clamp(0.05, 1.0)
-    } else {
-        0.45
-    };
-    let max_w = (fw - 2 * margin - 4).max(1);
-    let max_h = (fh - 2 * margin - 4).max(1);
-    let aspect = overlay.height as f32 / overlay.width as f32;
-    let mut w = ((fw as f32 * scale).round() as i64).clamp(1, max_w);
-    let mut h = ((w as f32 * aspect).round() as i64).max(1);
-    if h > max_h {
-        h = max_h;
-        w = ((h as f32 / aspect).round() as i64).clamp(1, max_w);
+    match PipLayer::new(
+        frame_w,
+        frame_h,
+        frame_bgra,
+        overlay,
+        scale_of_width,
+        margin_px,
+    ) {
+        Some(layer) => layer.apply(frame),
+        None => log::warn!("LetsCam: картинка в картинке пропущена (неверные размеры)"),
     }
-    let r = Rect {
-        x0: fw - margin - w,
-        y0: fh - margin - h,
-        x1: fw - margin,
-        y1: fh - margin,
-    };
-    let (ri, bi) = if frame_bgra { (2, 0) } else { (0, 2) };
-    let offset = (w / 120).max(3);
-    let soft = (w / 40).max(6);
-    let shadow = Rect {
-        x0: r.x0 + offset,
-        y0: r.y0 + offset,
-        x1: r.x1 + offset,
-        y1: r.y1 + offset,
-    };
-    let border = 2;
-    for y in (r.y0 - border).max(0)..(shadow.y1 + soft).min(fh) {
-        for x in (r.x0 - border).max(0)..(shadow.x1 + soft).min(fw) {
-            let i = ((y * fw + x) * 4) as usize;
-            let px = &mut frame[i..i + 4];
-            let inside_border =
-                x >= r.x0 - border && x < r.x1 + border && y >= r.y0 - border && y < r.y1 + border;
-            if x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1 {
-                let u = (x - r.x0) as f32 + 0.5;
-                let v = (y - r.y0) as f32 + 0.5;
-                let s = sample(
-                    overlay,
-                    u * overlay.width as f32 / w as f32,
-                    v * overlay.height as f32 / h as f32,
-                );
-                let a = s[3] / 255.0;
-                for (dst, src) in [(ri, s[0]), (1, s[1]), (bi, s[2])] {
-                    px[dst] = (src * a + f32::from(px[dst]) * (1.0 - a)).round() as u8;
+}
+
+/// The picture-in-picture of one GUI snapshot for one frame size, worked out once: each pixel of
+/// its box (the overlay, its border and its shadow) becomes `out = (add + frame * mul) / 256` per
+/// colour channel. A snapshot lasts a quarter of a second (`gui_fps`), so the bilinear scaling and
+/// the shadow are done once for its ~15 video frames instead of on every frame.
+pub struct PipLayer {
+    frame_w: u32,
+    frame_h: u32,
+    /// The box, in frame pixels: `x0..x0 + w`, `y0..y0 + h`.
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    /// Per box pixel, the frame's channels in order: what to add (0..=255×256) and how much of
+    /// the frame to keep (0..=256).
+    add: Vec<[u16; 3]>,
+    mul: Vec<u16>,
+}
+
+impl PipLayer {
+    /// None when the overlay or the frame has no usable size.
+    pub fn new(
+        frame_w: u32,
+        frame_h: u32,
+        frame_bgra: bool,
+        overlay: &Image,
+        scale_of_width: f32,
+        margin_px: u32,
+    ) -> Option<PipLayer> {
+        let (fw, fh) = (i64::from(frame_w), i64::from(frame_h));
+        if !overlay.is_valid() || fw < 8 || fh < 8 {
+            return None;
+        }
+        let mut layer = PipLayer {
+            frame_w,
+            frame_h,
+            x0: 0,
+            y0: 0,
+            w: 0,
+            h: 0,
+            add: Vec::new(),
+            mul: Vec::new(),
+        };
+        layer.build(frame_bgra, overlay, scale_of_width, margin_px);
+        Some(layer)
+    }
+
+    /// Whether this layer was made for frames of this size.
+    pub fn fits(&self, frame_w: u32, frame_h: u32) -> bool {
+        (self.frame_w, self.frame_h) == (frame_w, frame_h)
+    }
+
+    /// Blends the layer into `frame` (4 bytes per pixel, of the size it was made for).
+    pub fn apply(&self, frame: &mut [u8]) {
+        let fw = self.frame_w as usize;
+        if frame.len() < fw * self.frame_h as usize * 4 {
+            return;
+        }
+        for row in 0..self.h {
+            let at = ((self.y0 + row) * fw + self.x0) * 4;
+            let pixels = frame[at..at + self.w * 4].as_chunks_mut::<4>().0;
+            let k = row * self.w;
+            for ((px, add), &mul) in pixels
+                .iter_mut()
+                .zip(&self.add[k..k + self.w])
+                .zip(&self.mul[k..k + self.w])
+            {
+                if mul == 256 {
+                    continue;
                 }
-            } else if inside_border {
-                px[ri] = BORDER[0] as u8;
-                px[1] = BORDER[1] as u8;
-                px[bi] = BORDER[2] as u8;
-            } else {
-                let d = rect_dist(&shadow, x, y);
-                if d < soft as f32 {
-                    let k = 1.0 - d / soft as f32;
-                    let dark = 1.0 - SHADOW_ALPHA * k * k;
-                    for c in [0, 1, 2] {
-                        px[c] = (f32::from(px[c]) * dark).round() as u8;
+                for c in 0..3 {
+                    px[c] =
+                        ((u32::from(add[c]) + u32::from(px[c]) * u32::from(mul) + 128) >> 8) as u8;
+                }
+            }
+        }
+    }
+
+    fn build(&mut self, frame_bgra: bool, overlay: &Image, scale_of_width: f32, margin_px: u32) {
+        let (fw, fh) = (i64::from(self.frame_w), i64::from(self.frame_h));
+        let margin = i64::from(margin_px);
+        let scale = if scale_of_width.is_finite() {
+            scale_of_width.clamp(0.05, 1.0)
+        } else {
+            0.45
+        };
+        let max_w = (fw - 2 * margin - 4).max(1);
+        let max_h = (fh - 2 * margin - 4).max(1);
+        let aspect = overlay.height as f32 / overlay.width as f32;
+        let mut w = ((fw as f32 * scale).round() as i64).clamp(1, max_w);
+        let mut h = ((w as f32 * aspect).round() as i64).max(1);
+        if h > max_h {
+            h = max_h;
+            w = ((h as f32 / aspect).round() as i64).clamp(1, max_w);
+        }
+        let r = Rect {
+            x0: fw - margin - w,
+            y0: fh - margin - h,
+            x1: fw - margin,
+            y1: fh - margin,
+        };
+        let (ri, bi) = if frame_bgra { (2, 0) } else { (0, 2) };
+        let offset = (w / 120).max(3);
+        let soft = (w / 40).max(6);
+        let shadow = Rect {
+            x0: r.x0 + offset,
+            y0: r.y0 + offset,
+            x1: r.x1 + offset,
+            y1: r.y1 + offset,
+        };
+        let border = 2;
+        let (bx0, bx1) = ((r.x0 - border).max(0), (shadow.x1 + soft).min(fw));
+        let (by0, by1) = ((r.y0 - border).max(0), (shadow.y1 + soft).min(fh));
+        (self.x0, self.y0) = (bx0 as usize, by0 as usize);
+        (self.w, self.h) = ((bx1 - bx0).max(0) as usize, (by1 - by0).max(0) as usize);
+        self.add = Vec::with_capacity(self.w * self.h);
+        self.mul = Vec::with_capacity(self.w * self.h);
+        let fixed = |v: f32| (v * 256.0).round() as u16;
+        for y in by0..by1 {
+            for x in bx0..bx1 {
+                let inside_border = x >= r.x0 - border
+                    && x < r.x1 + border
+                    && y >= r.y0 - border
+                    && y < r.y1 + border;
+                let (add, mul) = if x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1 {
+                    let u = (x - r.x0) as f32 + 0.5;
+                    let v = (y - r.y0) as f32 + 0.5;
+                    let s = sample(
+                        overlay,
+                        u * overlay.width as f32 / w as f32,
+                        v * overlay.height as f32 / h as f32,
+                    );
+                    let a = s[3] / 255.0;
+                    let mut add = [0; 3];
+                    for (dst, src) in [(ri, s[0]), (1, s[1]), (bi, s[2])] {
+                        add[dst] = fixed(src * a);
                     }
-                }
+                    (add, fixed(1.0 - a))
+                } else if inside_border {
+                    let mut add = [0; 3];
+                    for (dst, src) in [(ri, BORDER[0]), (1, BORDER[1]), (bi, BORDER[2])] {
+                        add[dst] = fixed(src);
+                    }
+                    (add, 0)
+                } else {
+                    let d = rect_dist(&shadow, x, y);
+                    let dark = if d < soft as f32 {
+                        let k = 1.0 - d / soft as f32;
+                        1.0 - SHADOW_ALPHA * k * k
+                    } else {
+                        1.0
+                    };
+                    ([0; 3], fixed(dark))
+                };
+                self.add.push(add);
+                self.mul.push(mul);
             }
         }
     }
@@ -257,6 +362,41 @@ mod tests {
     fn px(frame: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * w + x) * 4) as usize;
         [frame[i], frame[i + 1], frame[i + 2], frame[i + 3]]
+    }
+
+    #[test]
+    fn half_transparent_overlay_blends_as_the_float_formula() {
+        let (fw, fh) = (200u32, 120u32);
+        let dst = [40u8, 80, 120, 255];
+        let mut frame = dst.repeat((fw * fh) as usize);
+        let src = [200u8, 100, 50, 128];
+        compose(&mut frame, fw, fh, false, &solid(20, 12, src), 0.45, 6);
+        let got = px(&frame, fw, 160, 90);
+        let a = f32::from(src[3]) / 255.0;
+        for c in 0..3 {
+            let want = f32::from(src[c]) * a + f32::from(dst[c]) * (1.0 - a);
+            assert!(
+                (f32::from(got[c]) - want).abs() <= 1.0,
+                "channel {c}: {got:?} vs {want}"
+            );
+        }
+        assert_eq!(got[3], 255, "alpha of the frame is kept");
+    }
+
+    #[test]
+    fn one_layer_serves_every_frame_of_its_size() {
+        let (fw, fh) = (320u32, 180u32);
+        let overlay = solid(32, 18, [10, 200, 30, 200]);
+        let layer = PipLayer::new(fw, fh, false, &overlay, 0.45, 8).expect("layer");
+        assert!(layer.fits(fw, fh) && !layer.fits(fw, fh + 1));
+        for shade in [0u8, 90, 255] {
+            let mut by_layer = [shade, shade, shade, 255].repeat((fw * fh) as usize);
+            let mut by_compose = by_layer.clone();
+            layer.apply(&mut by_layer);
+            compose(&mut by_compose, fw, fh, false, &overlay, 0.45, 8);
+            assert_eq!(by_layer, by_compose, "shade {shade}");
+        }
+        assert!(PipLayer::new(4, 4, false, &overlay, 0.45, 0).is_none());
     }
 
     #[test]

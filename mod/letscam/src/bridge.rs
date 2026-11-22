@@ -8,12 +8,13 @@ use std::sync::Mutex;
 /// not written as a PNG.
 const MARKER: &str = "letscam-capture:";
 
-/// One frame read back from the GPU, 4 bytes a pixel, rows packed.
+/// One frame read back from the GPU, 4 bytes a pixel, rows packed: the renderer's own buffer,
+/// handed over without a copy (a 1080p frame is 8 MB).
 pub struct Captured {
     pub tag: String,
     pub size: [u32; 2],
     pub bgra: bool,
-    pub pixels: Vec<[u8; 4]>,
+    pub pixels: Vec<u8>,
 }
 
 static CAPTURED: Mutex<Option<Captured>> = Mutex::new(None);
@@ -28,8 +29,13 @@ pub fn capture_tag(path: &Path) -> Option<String> {
     path.to_str()?.strip_prefix(MARKER).map(str::to_owned)
 }
 
-pub fn put(tag: String, size: [u32; 2], bgra: bool, pixels: Vec<[u8; 4]>) {
-    let frame = Captured { tag, size, bgra, pixels };
+pub fn put(tag: String, size: [u32; 2], bgra: bool, pixels: Vec<u8>) {
+    let frame = Captured {
+        tag,
+        size,
+        bgra,
+        pixels,
+    };
     match CAPTURED.lock() {
         Ok(mut slot) => *slot = Some(frame),
         Err(poisoned) => *poisoned.into_inner() = Some(frame),

@@ -27,6 +27,8 @@ pub(crate) enum Source {
     /// An input device whose name contains this text (case-insensitive); empty = default.
     Input(String),
     /// The default output device in loopback mode (WASAPI): everything the system plays.
+    /// Windows only, the fallback when the game's own audio can't be captured.
+    #[cfg_attr(not(windows), allow(dead_code))]
     OutputLoopback,
 }
 
