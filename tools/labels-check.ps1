@@ -28,7 +28,7 @@ $Client = "$S\launcher\versions\$Version\horizon-client.exe"
 $Ctl = "$S\launcher\versions\$Version\horizon-ctl.exe"
 $GameDir = "$S\bench\labels-client"
 $Scratch = "$S\bench\labels-player"
-while (Test-Path 'C:\ai-bridge\heavy.lock') { Write-Host 'waiting: heavy.lock is held'; Start-Sleep -Seconds 30 }
+. (Join-Path $PSScriptRoot 'heavy-queue.ps1')
 $mods = (Get-Content -Raw "$S\launcher\versions\$Version\native-mods.json" | ConvertFrom-Json).mods | ForEach-Object { "$($_.id) $($_.version)" }
 Write-Host "client: $Version ($($mods -join ', '))"
 if (-not ($mods -match '^letscam ') -or -not ($mods -match '^soulscraft ')) { throw "$Version lacks letscam or soulscraft" }
@@ -59,6 +59,8 @@ function Wait-Log([string]$Pattern, [int]$TimeoutSec) {
     throw "no '$Pattern' in the client log after $TimeoutSec s"
 }
 
+# The lock names this process: should a step before the try below throw, it frees itself.
+Enter-HeavyQueue "labels check $Version" 30
 $running = Invoke-Box "pgrep -af 'horizon-server' | grep -v pgrep || true"
 $others = @($running | Where-Object { $_ -match '/hz/servers/' -and $_ -notmatch [regex]::Escape($ServerDir) })
 if ($others) { throw "another server runs in the box, not starting: $($others -join '; ')" }
@@ -121,6 +123,7 @@ try {
         if (Get-Process -Id $botPid -ErrorAction SilentlyContinue) { Stop-Process -Id $botPid -Force }
     }
     Write-Host "server stop: $((Invoke-Box "$ServerExe --dir $ServerDir stop") | Select-Object -Last 1)"
+    Exit-HeavyQueue
 }
 
 $dir = Get-ChildItem $OutputRoot -Directory | Where-Object { $_.LastWriteTime -ge $started } | Sort-Object Name | Select-Object -Last 1

@@ -1,9 +1,10 @@
 # A/B render timing of LetsCam builds (docs/development.md): the bot lc_a renders the same
 # recording with each build in turn, A B A B…, on the bench server of bench-test.ps1, and the
 # client log's `letscam: render loop` / `render stats` lines are tabled per run. Alternating in one
-# sitting is the only fair comparison on this PC (timings drift between hours). Waits while
-# C:\ai-bridge\heavy.lock is held, and holds it itself for the measurement. Close OBS, other
-# servers and GPU jobs first. The bot is muted and never records (render only). Needs pwsh 7.
+# sitting is the only fair comparison on this PC (timings drift between hours). Each round (one
+# render per build) waits its turn in the PC's queue (heavy-queue.ps1) and gives the lock back
+# after it. Close OBS, other servers and GPU jobs first. The bot is muted and never records
+# (render only). Needs pwsh 7.
 #   pwsh -File tools\render-ab.ps1 -Versions native-8f83e5c-aaaa,native-8f83e5c-bbbb -Recording 2026-11-22_01-55-42
 param(
     [Parameter(Mandatory)][string[]]$Versions,
@@ -28,17 +29,14 @@ $ServerTool = "$S\launcher\versions\$BaseVersion\horizon-server.exe"
 $ServerDir = "$S\bench\server"
 $GameDir = "$S\bench\client"
 $Scratch = "$S\bench\player"
-$HeavyLock = 'C:\ai-bridge\heavy.lock'
+
 if (-not (Test-Path (Join-Path $OutputRoot "$Recording\replay.mcpr"))) { throw "no recording $Recording in $OutputRoot" }
 foreach ($v in $Versions) { if (-not (Test-Path "$S\launcher\versions\$v\horizon-client.exe")) { throw "no build $v" } }
 
 . ([scriptblock]::Create(((Get-Content 'C:\Claude code projects\horizon-joint-dev\joint.ps1')[273..326] -join "`n")))
 $CpuJob = [JointCpuCap]::Create(87)
 
-while (Test-Path $HeavyLock) { Write-Host "waiting: $(Get-Content -Raw $HeavyLock)"; Start-Sleep -Seconds 30 }
-Set-Content -Encoding utf8 $HeavyLock "letscam perf: render A/B ($($Versions -join ' vs ')), $(Get-Date -Format s)"
-$busy = Get-Process obs64, horizon-server, horizon-client -ErrorAction SilentlyContinue
-if ($busy) { Write-Warning "running now: $(($busy | ForEach-Object { "$($_.Name) $($_.Id)" }) -join ', ')" }
+. (Join-Path $PSScriptRoot 'heavy-queue.ps1')
 
 function Invoke-Bot([string]$Ctl, [string]$Socket, [string]$Line, [int]$Timeout = 60) {
     & $Ctl --socket $Socket --timeout $Timeout @($Line -split ' ') 2>&1
@@ -92,7 +90,7 @@ function Measure-Render([string]$Version) {
 $results = @()
 $serverUp = $false
 $sitting = Get-Date
-try {
+function Start-AbServer {
     & $ServerTool --dir $ServerDir cmd 'list' 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
         # Through files, as bench-test.ps1 does: the server keeps a captured pipe open forever,
@@ -102,19 +100,29 @@ try {
             -RedirectStandardOutput "$logs\server-start.out" -RedirectStandardError "$logs\server-start.err"
         if (-not $starter.WaitForExit(120000)) { $starter.Kill(); throw 'bench server: start did not return in 120 s' }
         if ($starter.ExitCode -ne 0) { throw "bench server did not start: $(Get-Content -Raw "$logs\server-start.err")" }
-        $serverUp = $true
+        $script:serverUp = $true
     }
+}
+
+try {
     foreach ($round in 1..$Rounds) {
-        foreach ($v in $Versions) {
-            $r = Measure-Render $v
-            $r | Add-Member Round $round
-            Write-Host ("round {0} {1}: game frame {2} ms, submit {3} ms (PiP {4}), {5} fps, {6} retries, {7} s in all" -f $round, $v, $r.GameFrameMs, $r.SubmitMs, $r.PipMs, $r.Fps, $r.Retries, $r.WallSec)
-            $results += $r
+        Enter-HeavyQueue "render A/B round $round ($($Versions -join ' vs '))" 30
+        try {
+            $busy = Get-Process obs64 -ErrorAction SilentlyContinue
+            if ($busy) { Write-Warning "OBS is running: the numbers of this round are suspect" }
+            Start-AbServer
+            foreach ($v in $Versions) {
+                $r = Measure-Render $v
+                $r | Add-Member Round $round
+                Write-Host ("round {0} {1}: game frame {2} ms, submit {3} ms (PiP {4}), {5} fps, {6} retries, {7} s in all" -f $round, $v, $r.GameFrameMs, $r.SubmitMs, $r.PipMs, $r.Fps, $r.Retries, $r.WallSec)
+                $results += $r
+            }
+        } finally {
+            Exit-HeavyQueue
         }
     }
 } finally {
     if ($serverUp) { & $ServerTool --dir $ServerDir stop 2>&1 | Out-Null }
-    Remove-Item -LiteralPath $HeavyLock -Force -ErrorAction SilentlyContinue
     # The renders of this sitting are measurements, not keepers; older files stay.
     Get-ChildItem (Join-Path $OutputRoot $Recording) -File -Filter "letscam_${Recording}*" |
         Where-Object { $_.LastWriteTime -ge $sitting } | Remove-Item -Force

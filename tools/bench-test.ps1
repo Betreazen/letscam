@@ -33,12 +33,9 @@ $GameDir = "$S\bench\client"
 $Scratch = "$S\bench\player"
 $ConfigFile = Join-Path $GameDir 'config\letscam-client.toml'
 $Ffprobe = 'ffprobe'
-# Another session's performance measurement holds this lock: a bench now would spoil it.
-$HeavyLock = 'C:\ai-bridge\heavy.lock'
-while (Test-Path $HeavyLock) {
-    Write-Host "waiting: $HeavyLock is held"
-    Start-Sleep -Seconds 30
-}
+# The PC's queue (heavy-queue.ps1): the bench waits for its turn and a quiet PC, holds the lock
+# while the game runs and gives it back before the checks.
+. (Join-Path $PSScriptRoot 'heavy-queue.ps1')
 if (-not $Version) {
     $commit = ($BaseVersion -split '-')[-1]
     $Version = (Get-ChildItem "$S\launcher\versions" -Directory -Filter "native-$commit-*" |
@@ -213,10 +210,11 @@ function Build-Set {
     foreach ($line in $lines) { Write-Host "console: $line -> $(Invoke-Console $line)" }
 }
 
-Start-BenchServer
+Enter-HeavyQueue "bench-test $Version" 45
 $bot = $null
 $started = Get-Date
 try {
+    Start-BenchServer
     $bot = Start-LcBot 1920 1080
     Invoke-Console "gamemode creative lc_a" | Out-Null
     # Daylight, as on the joint bench (the throwaway world's clock runs on between runs).
@@ -320,6 +318,7 @@ try {
     Stop-LcBot $bot
     if ($finalLog -and (Test-Path $finalLog)) { Copy-Item -LiteralPath $finalLog -Destination (Join-Path $Scratch 'lc_a-render.log') -Force }
     if (-not $KeepServer) { Stop-BenchServer }
+    Exit-HeavyQueue
 }
 
 $renderLog = Join-Path $Scratch 'lc_a-render.log'
