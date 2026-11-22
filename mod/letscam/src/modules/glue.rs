@@ -448,7 +448,13 @@ fn start_job(game: &mut Game<'_>, config: &engine::Config, dir: PathBuf, words: 
         }
     };
     let focus = options.focus.as_deref().map(FocusSpec::parse);
-    let mut job = match engine::RenderJob::open_with(&dir, config, options) {
+    // Without `keep_sources` the WAVs and GUI snapshots go after the last angle only: the
+    // angles still queued render from them too.
+    let mut config = config.clone();
+    if QUEUE.with_borrow(|queue| !queue.is_empty()) {
+        config.keep_sources = true;
+    }
+    let mut job = match engine::RenderJob::open_with(&dir, &config, options) {
         Ok(job) => job,
         Err(error) => {
             say(game, format!("Рендер не начался: {error}"));
@@ -763,7 +769,10 @@ fn finish_render(game: &mut Game<'_>, outcome: Result<(), String>) {
             if let Some((_, first)) = job.labels().iter().find(|(_, text)| !text.is_empty()) {
                 log::info!("letscam: mob labels: {} changes, first «{first}»", job.labels().len());
             }
-            job.finish_with_sheets()
+            let finishing = Instant::now();
+            let finished = job.finish_with_sheets();
+            log::info!("letscam: render finish: {} ms (video and sheets)", finishing.elapsed().as_millis());
+            finished
         } {
             Ok((path, sheets)) if sheets.is_empty() => {
                 format!("Ролик готов ({frames} кадров): {}", path.display())

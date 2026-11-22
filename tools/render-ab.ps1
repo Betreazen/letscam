@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory)][string[]]$Versions,
     [Parameter(Mandatory)][string]$Recording,     # folder name under $OutputRoot
     [int]$Rounds = 3,
-    [string]$Angle = 'auto',
+    # With sheets: the end of a render (video and contact sheets) is timed too.
+    [string]$Angle = 'auto sheet',
     [string]$SdkDev = 'C:\Claude code projects\horizon-sdk-dev',
     [string]$BaseVersion = 'nightly-2026-11-21-8f83e5c',
     [string]$OutputRoot = 'F:\letscam\modapi-bench',
@@ -59,6 +60,7 @@ function Measure-Render([string]$Version) {
         [JointCpuCap]::Assign($CpuJob, (Get-Process -Id $botPid).Handle)
         Invoke-Bot $ctl $socket 'wait-ready 120' 130 | Out-Null
         Start-Sleep -Seconds 3
+        $clock = [Diagnostics.Stopwatch]::StartNew()
         Invoke-Bot $ctl $socket "chat /letscam render $Recording $Angle" | Out-Null
         $deadline = (Get-Date).AddSeconds($RenderTimeoutSec)
         while ((Get-Date) -lt $deadline) {
@@ -66,6 +68,7 @@ function Measure-Render([string]$Version) {
             if ($done) { break }
             Start-Sleep -Seconds 2
         }
+        $wall = $clock.Elapsed.TotalSeconds
         if (-not $done -or $done.Line -notmatch 'Ролик готов') { throw "$Version render: $($done.Line)" }
         $loop = (Select-String -Path $log -Pattern 'letscam: render loop: .*' | Select-Object -Last 1).Matches[0].Value
         $stats = (Select-String -Path $log -Pattern 'letscam: render stats: .*' | Select-Object -Last 1).Matches[0].Value
@@ -76,6 +79,8 @@ function Measure-Render([string]$Version) {
             PipMs = [double]([regex]::Match($stats, 'PiP ([\d.]+) ms').Groups[1].Value)
             Fps = [double]([regex]::Match($stats, '\(([\d.]+) fps\)').Groups[1].Value)
             Retries = [int]([regex]::Match($loop, '(\d+) retries').Groups[1].Value)
+            # From the command to «Ролик готов»: start, frames, video and sheets (±2 s of polling).
+            WallSec = [math]::Round($wall, 1)
         }
     } finally {
         & $ctl --socket $socket quit 2>&1 | Out-Null
@@ -103,7 +108,7 @@ try {
         foreach ($v in $Versions) {
             $r = Measure-Render $v
             $r | Add-Member Round $round
-            Write-Host ("round {0} {1}: game frame {2} ms, submit {3} ms (PiP {4}), {5} fps, {6} retries" -f $round, $v, $r.GameFrameMs, $r.SubmitMs, $r.PipMs, $r.Fps, $r.Retries)
+            Write-Host ("round {0} {1}: game frame {2} ms, submit {3} ms (PiP {4}), {5} fps, {6} retries, {7} s in all" -f $round, $v, $r.GameFrameMs, $r.SubmitMs, $r.PipMs, $r.Fps, $r.Retries, $r.WallSec)
             $results += $r
         }
     }
@@ -116,7 +121,8 @@ try {
 }
 $results | Group-Object Version | ForEach-Object {
     $g = $_.Group
-    "{0}: game frame {1:N1} ms, submit {2:N2} ms, PiP {3:N2} ms, {4:N1} fps (median of {5})" -f $_.Name,
-        (($g.GameFrameMs | Sort-Object)[[int]($g.Count / 2)]), (($g.SubmitMs | Sort-Object)[[int]($g.Count / 2)]),
-        (($g.PipMs | Sort-Object)[[int]($g.Count / 2)]), (($g.Fps | Sort-Object)[[int]($g.Count / 2)]), $g.Count
+    "{0}: game frame {1:N1} ms, submit {2:N2} ms, PiP {3:N2} ms, {4:N1} fps, {6:N1} s in all (median of {5})" -f $_.Name,
+        (($g.GameFrameMs | Sort-Object)[[math]::Floor($g.Count / 2)]), (($g.SubmitMs | Sort-Object)[[math]::Floor($g.Count / 2)]),
+        (($g.PipMs | Sort-Object)[[math]::Floor($g.Count / 2)]), (($g.Fps | Sort-Object)[[math]::Floor($g.Count / 2)]), $g.Count,
+        (($g.WallSec | Sort-Object)[[math]::Floor($g.Count / 2)])
 }

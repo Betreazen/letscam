@@ -91,17 +91,24 @@ pub fn labels_path(video: &Path) -> PathBuf {
     video.with_file_name(format!("{stem}_labels.txt"))
 }
 
-/// ffmpeg arguments for one page; `ticks_per_video_s` turns video time into game ticks.
-/// `labels`: a `sendcmd` file (`labels_cmd`) whose lines go at the bottom of the stills.
+/// ffmpeg arguments for one page of a `fps` video; `ticks_per_video_s` turns video time into
+/// game ticks. `labels`: a `sendcmd` file (`labels_cmd`) whose lines go at the bottom of the
+/// stills. Each page seeks to its own part of the video (half a second early, the decoder starts
+/// at a keyframe) and picks its stills by time, kept from the video's start (`-copyts
+/// -start_at_zero`, so ticks and labels read as without the seek): decoding the whole video up
+/// to every page made the sheets take twice as long.
+#[allow(clippy::too_many_arguments)]
 pub fn sheet_args(
     video: &Path,
     out_png: &Path,
+    fps: u32,
     step: u64,
     page: Page,
     ticks_per_video_s: f64,
     font: Option<&str>,
     labels: Option<&Path>,
 ) -> Vec<String> {
+    let fps = fps.max(1);
     let rows = page.stills.div_ceil(SHEET_COLS).max(1);
     let labels = labels.filter(|_| font.is_some());
     let mut chain = Vec::new();
@@ -112,7 +119,7 @@ pub fn sheet_args(
         ));
     }
     chain.push(format!(
-        "select='not(mod(n\\,{step}))*between(n\\,{}\\,{})'",
+        "select='not(mod(round(t*{fps})\\,{step}))*between(round(t*{fps})\\,{}\\,{})'",
         page.first, page.last
     ));
     chain.push(format!("scale={THUMB_WIDTH}:-2"));
@@ -131,9 +138,13 @@ pub fn sheet_args(
         }
     }
     chain.push(format!("tile={SHEET_COLS}x{rows}:padding=4:margin=4"));
-    let mut a: Vec<String> = ["-hide_banner", "-v", "error", "-y", "-i"]
+    let seek = (page.first as f64 / f64::from(fps) - 0.5).max(0.0);
+    let mut a: Vec<String> = ["-hide_banner", "-v", "error", "-y"]
         .map(String::from)
         .to_vec();
+    a.extend(["-copyts", "-start_at_zero", "-ss"].map(String::from));
+    a.push(format!("{seek:.3}"));
+    a.push("-i".into());
     a.push(video.to_string_lossy().into_owned());
     a.push("-vf".into());
     a.push(chain.join(","));
@@ -182,6 +193,7 @@ pub fn make_sheets(
         let args = sheet_args(
             video,
             &png,
+            fps,
             step,
             page,
             TICKS_PER_SECOND * speed,
@@ -202,11 +214,22 @@ pub fn make_sheets(
         }
         Ok(png)
     };
-    let out = pages(total_frames, step)
-        .into_iter()
-        .enumerate()
-        .map(page)
-        .collect();
+    // One ffmpeg per page, all at once: each takes over a second just to start (a 200 MB
+    // executable), and one after another they kept the game waiting for every page.
+    let out = std::thread::scope(|scope| {
+        let workers: Vec<_> = pages(total_frames, step)
+            .into_iter()
+            .enumerate()
+            .map(|job| scope.spawn(move || page(job)))
+            .collect();
+        workers
+            .into_iter()
+            .map(|w| {
+                w.join()
+                    .unwrap_or_else(|_| Err("поток листа кадров упал".into()))
+            })
+            .collect()
+    });
     if with_labels {
         let _ = std::fs::remove_file(&cmd);
     }
@@ -266,6 +289,7 @@ mod tests {
         let a = sheet_args(
             Path::new("v.mp4"),
             Path::new("s.png"),
+            60,
             12,
             page,
             5.0,
@@ -273,7 +297,9 @@ mod tests {
             None,
         );
         let vf = &a[a.iter().position(|s| s == "-vf").expect("vf") + 1];
-        assert!(vf.starts_with("select='not(mod(n\\,12))*between(n\\,0\\,108)',scale=480:-2,"));
+        assert!(vf.starts_with(
+            "select='not(mod(round(t*60)\\,12))*between(round(t*60)\\,0\\,108)',scale=480:-2,"
+        ));
         assert!(
             vf.contains("fontfile='C\\:/Windows/Fonts/arial.ttf'"),
             "{vf}"
@@ -286,6 +312,7 @@ mod tests {
         let plain = sheet_args(
             Path::new("v.mp4"),
             Path::new("s.png"),
+            60,
             12,
             page,
             5.0,
@@ -293,6 +320,30 @@ mod tests {
             None,
         );
         assert!(!plain.iter().any(|s| s.contains("drawtext")));
+        let ss =
+            |args: &[String]| args[args.iter().position(|s| s == "-ss").expect("ss") + 1].clone();
+        assert_eq!(ss(&plain), "0.000");
+        let later = Page {
+            first: 600,
+            last: 888,
+            stills: 25,
+        };
+        let a = sheet_args(
+            Path::new("v.mp4"),
+            Path::new("s.png"),
+            60,
+            12,
+            later,
+            5.0,
+            None,
+            None,
+        );
+        assert_eq!(
+            ss(&a),
+            "9.500",
+            "half a second before the page's first frame"
+        );
+        assert!(a.windows(2).any(|w| w == ["-copyts", "-start_at_zero"]));
         assert_eq!(
             sheet_path(Path::new("d/letscam_a_x0.25.mp4"), 0),
             Path::new("d/letscam_a_x0.25_sheet_01.png")
@@ -310,6 +361,7 @@ mod tests {
         let a = sheet_args(
             Path::new("v.mp4"),
             Path::new("s.png"),
+            60,
             12,
             page,
             5.0,
@@ -326,6 +378,7 @@ mod tests {
         let a = sheet_args(
             Path::new("v.mp4"),
             Path::new("s.png"),
+            60,
             12,
             page,
             5.0,
