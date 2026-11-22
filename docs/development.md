@@ -137,6 +137,7 @@ pwsh -File tools\bench-test.ps1
 | отдельные реплеи теряют время суток ([#16040](https://github.com/horizon-rust/horizon/issues/16040)) | сохраняет его в `world_time.json` |
 | очередь рекордера на 2048 пакетов переполняется, если диск встаёт, и запись обрывается ([#16041](https://github.com/horizon-rust/horizon/issues/16041)) | сразу пишет об этом в чат |
 | модель своего игрока забегает вперёд в клетке открытой двери ([#16527](https://github.com/horizon-rust/horizon/issues/16527)) | открыто |
-| сообщения модов идут мимо рекордера студии | `payload_recorded` пишет `soulscraft:state` в реплей сам; в игре подписи проверят, когда SoulsCraft выйдет на Mod API |
+| сообщения модов идут мимо рекордера студии | `payload_recorded` пишет `soulscraft:state` в реплей сам; в игре подписи не проверены |
+| два нативных мода с общими crates.io-крейтами (serde, log) не линкуются в одну игру ([#19616](https://github.com/horizon-rust/horizon/issues/19616)) | LetsCam и SoulsCraft нельзя собрать вместе; `tools/labels-check.ps1` (бой ревенанта на Linux-сервере SoulsCraft, подписи на листах) ждёт исправления |
 | миксин на `receive_client_payload` не собирается: генератор патча экспортирует `const _` модуля ([#19505](https://github.com/horizon-rust/horizon/issues/19505)) | OVERWRITE `receive_credited_backlog` повторяет её строки на 8f83e5c; при переходе на новую сборку их надо сверить |
 | кадр в рендере на Nightly 8f83e5c ~19–20 мс против ~13 мс на 7e4e421 | причина не найдена |
